@@ -1,0 +1,21 @@
+{
+  "aliases": {
+    "hyperfoil": {
+      "description": "Hyperfoil 0.29.3: runs a benchmark YAML in this JVM (bench.sh, all load)",
+      "script-ref": "io.hyperfoil:hyperfoil-cli:0.29.3",
+      "dependencies": [
+        "io.hyperfoil:hyperfoil-all:0.29.3@pom",
+        "io.hyperfoil:hyperfoil-api",
+        "io.hyperfoil:hyperfoil-clustering",
+        "io.hyperfoil:hyperfoil-controller-api",
+        "io.hyperfoil:hyperfoil-core",
+        "io.hyperfoil:hyperfoil-http"
+      ],
+      "main": "io.hyperfoil.cli.commands.LoadAndRun"
+    },
+    "ap-loader": {
+      "description": "async-profiler 4.5 through ap-loader (bench.sh profile)",
+      "script-ref": "me.bechberger:ap-loader-all:4.5-13"
+    }
+  }
+}

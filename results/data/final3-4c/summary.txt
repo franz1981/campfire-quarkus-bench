@@ -1,0 +1,7 @@
+
+medians: rps (share of rust) / cpu us per req / p99 ms / cgroup anon MB / VmRSS MB; invalid responses and errors summed
+conc     1 quarkus4             16262        /  43.7 /     0.1 /  204 /  232  invalid=0 errors=0 reps=3
+conc    16 quarkus4            103100        /  29.1 /     0.3 /  267 /  295  invalid=0 errors=0 reps=3
+conc    64 quarkus4            121296        /  24.5 /     3.1 /  285 /  313  invalid=0 errors=0 reps=3
+conc   256 quarkus4            129514        /  23.6 /     5.9 /  290 /  319  invalid=0 errors=0 reps=3
+conc  1024 quarkus4            132260        /  24.1 /    14.2 /  322 /  350  invalid=0 errors=0 reps=3

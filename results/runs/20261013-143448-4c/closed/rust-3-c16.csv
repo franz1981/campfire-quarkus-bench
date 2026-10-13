@@ -1,0 +1,3 @@
+Phase,Metric,Start,End,Requests,Responses,Mean,StdDev,Min,p50.0,p90.0,p99.0,p99.9,p99.99,Max,ConnectionErrors,RequestTimeouts,InternalErrors,Invalid,BlockedTime,http.2xx,http.3xx,http.4xx,http.5xx,http.CacheHits,http.OtherStatus,MinSessions,MaxSessions
+main,fetch,1791895979144,1791895994151,670910,670910,356994,120378,81920,344063,516095,688127,839679,1384447,4325375,0,0,0,0,0,670910,0,0,0,0,0,0,16
+warmup,fetch,1791895974133,1791895979144,222326,222326,358034,128702,80896,344063,516095,692223,929791,3227647,4390911,0,0,0,0,0,222326,0,0,0,0,0,0,16

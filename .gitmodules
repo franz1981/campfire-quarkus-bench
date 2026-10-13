@@ -1,0 +1,6 @@
+[submodule "upstream/once-campfire-rust"]
+	path = upstream/once-campfire-rust
+	url = https://github.com/basecamp/once-campfire-rust.git
+[submodule "upstream/once-campfire-kotlin"]
+	path = upstream/once-campfire-kotlin
+	url = https://github.com/mysticcoders/once-campfire-kotlin.git

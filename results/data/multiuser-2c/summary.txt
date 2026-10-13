@@ -1,0 +1,12 @@
+multiuser kotlin            rep=1 conc=   16 rps=   40867 (david 20433, jason 20434) cpu_us/req= 41.2 invalid=0 errors=0
+multiuser kotlin            rep=1 conc= 1024 rps=   42567 (david 21301, jason 21266) cpu_us/req= 39.2 invalid=0 errors=0
+multiuser quarkus4-offload  rep=1 conc=   16 rps=   33909 (david 16904, jason 17005) cpu_us/req= 47.9 invalid=0 errors=0
+multiuser quarkus4-offload  rep=1 conc= 1024 rps=   45958 (david 22948, jason 23010) cpu_us/req= 37.7 invalid=0 errors=0
+multiuser quarkus4-staged   rep=1 conc=   16 rps=   43270 (david 21651, jason 21619) cpu_us/req= 35.0 invalid=0 errors=0
+multiuser quarkus4-staged   rep=1 conc= 1024 rps=   53612 (david 26840, jason 26772) cpu_us/req= 31.4 invalid=0 errors=0
+multiuser quarkus4-staged   rep=2 conc=   16 rps=   43122 (david 21849, jason 21273) cpu_us/req= 35.7 invalid=0 errors=0
+multiuser quarkus4-staged   rep=2 conc= 1024 rps=   52789 (david 26369, jason 26421) cpu_us/req= 32.0 invalid=0 errors=0
+multiuser quarkus4-offload  rep=2 conc=   16 rps=   33542 (david 16920, jason 16622) cpu_us/req= 48.6 invalid=0 errors=0
+multiuser quarkus4-offload  rep=2 conc= 1024 rps=   45747 (david 22858, jason 22888) cpu_us/req= 37.5 invalid=0 errors=0
+multiuser kotlin            rep=2 conc=   16 rps=   41265 (david 20631, jason 20634) cpu_us/req= 40.8 invalid=0 errors=0
+multiuser kotlin            rep=2 conc= 1024 rps=   43722 (david 21885, jason 21837) cpu_us/req= 38.2 invalid=0 errors=0

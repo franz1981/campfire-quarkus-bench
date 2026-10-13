@@ -1,0 +1,23 @@
+
+medians: rps (share of rust) / cpu us per req / p99 ms / cgroup anon MB / VmRSS MB; invalid responses and errors summed
+conc     1 kotlin               14782 (152%) /  49.0 /     0.1 /  196 /  222  invalid=0 errors=0 reps=3
+conc     1 quarkus4             16034 (165%) /  45.5 /     0.1 /  207 /  235  invalid=0 errors=0 reps=3
+conc     1 rust                  9726 (100%) /  94.4 /     0.1 /   23 /   53  invalid=0 errors=0 reps=3
+conc    16 kotlin               49254 (108%) /  57.6 /     0.8 /  197 /  224  invalid=0 errors=0 reps=3
+conc    16 quarkus4            101626 (223%) /  29.8 /     0.3 /  269 /  298  invalid=0 errors=0 reps=3
+conc    16 rust                 45516 (100%) /  73.4 /     0.7 /   23 /   53  invalid=0 errors=0 reps=3
+conc    64 kotlin               70002 (144%) /  41.8 /     2.0 /  217 /  244  invalid=0 errors=0 reps=3
+conc    64 quarkus4            118053 (243%) /  25.6 /     3.1 /  286 /  315  invalid=0 errors=0 reps=3
+conc    64 rust                 48550 (100%) /  67.9 /     2.5 /   28 /   59  invalid=0 errors=0 reps=3
+conc   256 kotlin               95758 (179%) /  32.6 /     6.2 /  292 /  318  invalid=0 errors=0 reps=3
+conc   256 quarkus4            130084 (243%) /  23.7 /     5.9 /  292 /  320  invalid=0 errors=0 reps=3
+conc   256 rust                 53562 (100%) /  60.7 /     8.3 /   39 /   70  invalid=0 errors=0 reps=3
+conc  1024 kotlin              101622 (212%) /  31.0 /    16.7 /  337 /  364  invalid=0 errors=0 reps=3
+conc  1024 quarkus4            131626 (274%) /  25.0 /    15.7 /  324 /  353  invalid=0 errors=0 reps=3
+conc  1024 rust                 48042 (100%) /  69.4 /    41.6 /   79 /  109  invalid=0 errors=0 reps=3
+conc  4096 kotlin               90360 (204%) /  34.2 /    58.6 /  351 /  378  invalid=0 errors=0 reps=3
+conc  4096 quarkus4            115934 (262%) /  28.8 /    62.3 /  464 /  492  invalid=0 errors=0 reps=3
+conc  4096 rust                 44199 (100%) /  76.9 /   330.2 /  231 /  261  invalid=0 errors=0 reps=3
+conc 16384 kotlin               82698 (196%) /  39.2 /   412.9 /  592 /  619  invalid=0 errors=0 reps=3
+conc 16384 quarkus4             89585 (213%) /  37.3 /   389.9 /  419 /  448  invalid=0 errors=0 reps=3
+conc 16384 rust                 42087 (100%) /  80.0 /  1480.7 /  815 /  845  invalid=0 errors=0 reps=3

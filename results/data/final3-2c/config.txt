@@ -1,0 +1,11 @@
+QUARKUS_OPTS=-Dquarkus.vertx.event-loops-pool-size=3
+APPS=quarkus4 CORES=2 APP_CPUS=2,3 APP_MEMS=0 LOADGEN_CPUS=4-7 LOADGEN_MEMS=0 REPS=3 SECS=15 WARMUP=20 CONCS=1 16 64 256 1024 JVM_OPTS=-XX:+UseParallelGC FREQ_MHZ=4300
+7.1.13-100.fc43.x86_64
+Model name:                              AMD Ryzen 9 7950X 16-Core Processor
+openjdk version "25.0.3" 2026-04-21 LTS
+openjdk version "26.0.1" 2026-04-21
+openjdk version "27" 2026-09-15
+once-campfire-rust 6dae2fd 1 changed
+once-campfire-kotlin 87436f3 0 changed
+once-campfire-verification ec02deb 0 changed
+campfire-quarkus-bench 0202ecb 20 changed

@@ -1,0 +1,61 @@
+# The fixed-rate (open) phase of the benchmark, as the Kotlin port's harness ran it with oha
+# (bench/cloud/remote-bench.sh: oha -q RATE -c 2048 --latency-correction --disable-compression):
+# RATE requests/s through CONNS keep-alive connections, each request timed from its scheduled start,
+# the gzipped page received as is. bench.sh runs it once per offered rate (Hyperfoil via jbang).
+#
+# A WARMUP at the same rate comes first: it opens the connections and warms Hyperfoil's own JVM. The
+# measured phase starts only once it has terminated (startAfterStrict) and stops at MAX_DURATION. SESSIONS is how many requests can be in flight without
+# allocating (rate x latency: bench.sh sizes it for a 2 s spike at the full rate); past it Hyperfoil
+# allocates more rather than drop scheduled requests (sessionLimitPolicy: CONTINUE; oha queues them
+# without limit), and reports the peak in MaxSessions.
+name: campfire-room-rate
+threads: !param THREADS 4
+http:
+  host: !concat [ "http://127.0.0.1:", !param PORT 4390 ]
+  allowHttp2: false
+  useHttpCache: false
+  sharedConnections: !param CONNS 2048
+# After `http` (which registers the HTTP plugin). Time each request from its scheduled start (no
+# coordinated omission); send exactly the request below: no per-session user-agent, no cookies
+# echoed from responses.
+ergonomics:
+  compensateInternalLatency: true
+  userAgentFromSession: false
+  repeatCookies: false
+phases:
+- warmup:
+    constantRate:
+      usersPerSec: !param RATE 10000
+      # Evenly spaced arrivals (Hyperfoil's default, variance: true, is Poisson). oha 1.16 schedules request i
+      # at start + i/rate too, but wakes on tokio's millisecond timer, releasing each millisecond's requests together.
+      variance: false
+      duration: !param WARMUP 5s
+      maxSessions: !param SESSIONS 20000
+      sessionLimitPolicy: CONTINUE
+      scenario: &scenario
+        maxRequests: 1
+        maxSequences: 1
+        orderedSequences:
+        - fetch:
+          - httpRequest:
+              GET: !concat [ "/rooms/", !param ROOM 486777696 ]
+              # Hyperfoil's default SLA fails a phase if any request waits for a free connection, which
+              # also cancels the measured phase after a warmup; bench.sh reports that wait instead.
+              sla:
+              - blockedRatio: 1000
+              # The request oha sent (verified byte for byte, header order aside).
+              headers:
+                accept: "*/*"
+                user-agent: curl/8.7.1
+                cookie: !param COOKIE
+                accept-encoding: gzip
+- main:
+    constantRate:
+      startAfterStrict: warmup
+      usersPerSec: !param RATE 10000
+      variance: false
+      duration: !param DURATION 15s
+      maxDuration: !param MAX_DURATION 60s
+      maxSessions: !param SESSIONS 20000
+      sessionLimitPolicy: CONTINUE
+      scenario: *scenario

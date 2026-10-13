@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <groupId>io.quarkus.campfire</groupId>
+    <artifactId>campfire-quarkus4</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <quarkus.platform.version>4.0.0.Beta1</quarkus.platform.version>
+        <!-- The Kotlin port's modules, installed by scripts/install-kotlin-libs.sh (its git sha). -->
+        <campfire.kotlin.version>87436f3</campfire.kotlin.version>
+        <kotlin.version>2.4.20</kotlin.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>io.quarkus.platform</groupId>
+                <artifactId>quarkus-bom</artifactId>
+                <version>${quarkus.platform.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-vertx-http</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-caffeine</artifactId>
+        </dependency>
+        <!-- The SQLite thread's task queue (MpscUnboundedXaddArrayQueue). -->
+        <dependency>
+            <groupId>org.jctools</groupId>
+            <artifactId>jctools-core</artifactId>
+            <version>4.0.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport-native-epoll</artifactId>
+            <classifier>linux-x86_64</classifier>
+        </dependency>
+
+        <!-- The Rails-compatible formats: cookies, routes, templates, rich text, the kit middleware. -->
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>ruby-compat</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>rails-compat</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>routes</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>db</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>kit</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>assets</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>richtext</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>views</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <!-- Only for campfire.app.browser (allow_browser's User-Agent parsing) and PublicFiles. -->
+        <dependency><groupId>campfire.kotlin</groupId><artifactId>campfire</artifactId><version>${campfire.kotlin.version}</version></dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <!-- The kit parses Rails JSON with Jackson 2; Quarkus 4 brings Jackson 3 (tools.jackson) instead. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.22.3</version>
+        </dependency>
+        <dependency>
+            <groupId>at.favre.lib</groupId>
+            <artifactId>bcrypt</artifactId>
+            <version>0.10.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+            <version>1.5.7-6</version>
+        </dependency>
+
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>io.quarkus.platform</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <version>${quarkus.platform.version}</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.1</version>
+                <configuration>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

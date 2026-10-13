@@ -1,0 +1,6 @@
+# Connection handling the Quarkus HTTP layer must match (Netty in Kotlin, hyper in Rust).
+GET /rooms/486777696 | Cookie: $COOKIE | Accept-Encoding: gzip | Connection: close
+GET /up | Connection: close
+HTTP10 GET /rooms/486777696 | Cookie: $COOKIE | Accept-Encoding: gzip
+HTTP10 GET /up
+HTTP10 GET /rooms/486777696 | Cookie: $COOKIE | Connection: keep-alive

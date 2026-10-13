@@ -1,0 +1,17 @@
+
+medians: rps (share of rust) / cpu us per req / p99 ms / anon MB; invalid responses and errors summed
+conc     1 kotlin               15754 (151%) /  49.5 /     0.1 /  196  invalid=0 errors=0 reps=3
+conc     1 quarkus4-stock       14521 (139%) /  55.6 /     0.1 /  323  invalid=0 errors=0 reps=3
+conc     1 rust                 10439 (100%) /  91.7 /     0.1 /   21  invalid=0 errors=0 reps=3
+conc    16 kotlin               48873 (103%) /  58.8 /     0.7 /  197  invalid=0 errors=0 reps=3
+conc    16 quarkus4-stock       83501 (177%) /  35.6 /     0.5 /  331  invalid=0 errors=0 reps=3
+conc    16 rust                 47230 (100%) /  70.8 /     0.6 /   22  invalid=0 errors=0 reps=3
+conc    64 kotlin               71163 (141%) /  42.3 /     2.0 /  220  invalid=0 errors=0 reps=3
+conc    64 quarkus4-stock       99796 (198%) /  30.0 /     1.4 /  332  invalid=0 errors=0 reps=3
+conc    64 rust                 50321 (100%) /  65.7 /     2.4 /   27  invalid=0 errors=0 reps=3
+conc   256 kotlin               91995 (166%) /  34.6 /     6.1 /  286  invalid=0 errors=0 reps=3
+conc   256 quarkus4-stock       99742 (180%) /  29.5 /     5.0 /  341  invalid=0 errors=0 reps=3
+conc   256 rust                 55488 (100%) /  58.8 /     8.0 /   38  invalid=0 errors=0 reps=3
+conc  1024 kotlin               89232 (182%) /  35.7 /    16.6 /  331  invalid=0 errors=0 reps=3
+conc  1024 quarkus4-stock       90427 (184%) /  32.5 /    19.0 /  408  invalid=0 errors=0 reps=3
+conc  1024 rust                 49020 (100%) /  68.6 /    38.0 /   82  invalid=0 errors=0 reps=3
