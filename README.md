@@ -134,6 +134,9 @@ Each was measured on its own, before and after, in [NOTES.md](NOTES.md):
   run.
 - All three apps start from the same seed, with the same environment, one at a time, on the same
   CPUs.
+- The Rust and Kotlin ports are built as published, from the commits in `upstream/`. (The Kotlin
+  article measured Rust with a patch to its listen backlog; this repository leaves it as shipped:
+  [DIFFERENCES.md](DIFFERENCES.md).)
 
 ## Requirements
 
@@ -162,13 +165,13 @@ git clone --recurse-submodules <this repo> && cd campfire-quarkus-bench
 ./bench.sh parity                 # must report "0 different"
 ./bench.sh run --matrix quick     # Quarkus vs Kotlin, 4 cores, two connection counts, ~5 minutes
 ./bench.sh run                    # all out, the full matrix (bench/matrix/article.conf), ~30 minutes
-./bench.sh run --rate           # ...then fixed rates, derived from those results, ~25 minutes more
+./bench.sh run --rate 20000,40000   # fixed rates instead: each app at each rate you choose
 ```
 
 `run` picks the CPUs: the app gets `--cores` physical cores (one SMT thread each) on one NUMA node,
 the load driver twice as many, never on the app's cores. To choose them yourself:
 `--app-cpus 0-3 --driver-cpus 8-15`. Other options: `--apps quarkus,kotlin`, `--conns 64,1024`,
-`--reps 1` (all-out steps; the fixed-rate phase uses the matrix's `OPEN_REPS`), `--rate`; `./bench.sh --help`
+`--reps 1`, `--rate 20000,40000`; `./bench.sh --help`
 lists them. Runs on one machine wait for each other (a lock file, `BENCH_LOCK`). A matrix is a small file of settings in
 `bench/matrix/`; add your own.
 
@@ -207,9 +210,9 @@ Both phases use one load tool, [Hyperfoil](https://hyperfoil.io), sending the sa
 - **All out (closed loop)**: N connections, each sending its next request when its response is in.
   20 s warmup at 16 connections after every start, 15 s per step after a 5 s warmup, 3 reps in
   alternating app order, medians.
-- **Fixed rate (`--rate`; an "open model": requests arrive on schedule, whatever the app does)**: offered loads of 0.5 to 1.4 times the best app's all-out rate at 64
-  connections, through 2,048 connections, arrivals evenly spaced, each request timed from when it
-  was due, so a stall shows in the latency.
+- **Fixed rates (`--rate 20000,40000`; an "open model": requests arrive on schedule, whatever the app
+  does)**: each app at each rate you give, through 2,048 connections, arrivals evenly spaced, each
+  request timed from when it was due, so a stall shows in the latency.
 
 ### Why Hyperfoil
 
@@ -263,7 +266,7 @@ Kotlin port wrote all of it.
 
 "First working version": parity with Rust (0 different) and a first measurement against Kotlin, on
 one core, where it was still slower (18.5k vs 21.5k req/s). Everything after that (Quarkus 4, the
-staged architecture, FFM, the measurements behind NOTES.md and this harness) is in the last column.
+staged architecture, FFM, the measurements behind [NOTES.md](NOTES.md) and this harness) is in the last column.
 
 ## Layout
 
@@ -277,6 +280,3 @@ fixtures/                the seed database and the session cookie (fixtures/READ
 results/                 this machine's results and the data behind them
 ```
 
-### Nothing is patched
-
-The Rust and Kotlin ports are built from their repositories at the commits measured, unmodified.

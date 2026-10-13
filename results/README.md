@@ -44,6 +44,25 @@ The same data, as numbers:
   connections, error lines in an app's log, waits for a connection in the measured phase, or a
   saturated load driver.
 
+**Why Quarkus slows down, and grows, with many connections.** From 1,024 to 4,096 connections its
+throughput drops 6% and its memory rises from 378 to 601 MB. What the investigation measured
+([NOTES.md](../NOTES.md), "Many connections", at 2 cores up to 16,384 connections):
+
+- **Every open connection keeps objects alive**: about 11 KB of heap each (Netty's and Vert.x'
+  per-connection state, buffers), about 200 MB at 16,384 connections, for as long as they stay open.
+  That was measured before one fix: 4.7 KB of it was a Vert.x queue per connection, removed here by
+  Vert.x's strict thread mode and reported upstream
+  ([eclipse-vertx/vert.x#6429](https://github.com/eclipse-vertx/vert.x/issues/6429)).
+- **The garbage collector pays for them on every young collection**: it has to scan the old
+  generation's cards that point into the young one, and that scan grew from 0.3 to 6.4 µs per
+  request between 1,024 and 16,384 connections (CPU profile; [flame graphs](#where-the-time-goes)).
+  Full collections happened too, but cost far less CPU (1.9% of the samples).
+- **The heap is capped at 512 MB for both JVMs** (`-Xmx512m`), and Quarkus runs with the UBI image's
+  options that return memory to the OS (`MaxHeapFreeRatio=20`, `GCTimeRatio=4`). With 200 MB of live
+  connection state that leaves little room, so collections come more often: an inference, not a
+  measured comparison. We did not tune the heap per core count or per connection count, on purpose;
+  a bigger heap, or a collector without a card table, are open questions for the challenge.
+
 **Repeatability.** An earlier full run of the same matrix the same afternoon (not kept) agreed within
 3% at every connection count, e.g. Quarkus 133,823 and Kotlin 100,998 req/s at 1,024 connections.
 

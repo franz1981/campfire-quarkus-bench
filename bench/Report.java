@@ -15,7 +15,6 @@ import java.util.stream.Stream;
  * chart of req/s.
  *
  *   jbang bench/Report.java RUN_DIR [--markdown]    the tables (Markdown with --markdown)
- *   jbang bench/Report.java RUN_DIR --capacity       the best app's median req/s at 64 connections
  *   jbang bench/Report.java RUN_DIR --charts         SVG charts of the all-out medians into RUN_DIR/charts/
  */
 public class Report {
@@ -27,14 +26,13 @@ public class Report {
     }
 
     public static void main(String[] args) throws IOException {
-        if (args.length == 0) { System.err.println("usage: Report.java RUN_DIR [--markdown|--capacity]"); System.exit(2); }
+        if (args.length == 0) { System.err.println("usage: Report.java RUN_DIR [--markdown|--charts]"); System.exit(2); }
         Path dir = Path.of(args[0]);
         Set<String> flags = Set.of(Arrays.copyOfRange(args, 1, args.length));
         List<Step> all = new ArrayList<>(load(dir.resolve("closed"), "closed", "-c"));
         all.addAll(load(dir.resolve("open"), "open", "-r"));
         List<Step> closed = all.stream().filter(s -> s.kind().equals("closed") && !s.failed()).toList();
         List<Step> open = all.stream().filter(s -> s.kind().equals("open") && !s.failed()).toList();
-        if (flags.contains("--capacity")) { System.out.println(capacity(closed)); return; }
         if (flags.contains("--charts")) { charts(closed, dir.resolve("charts")); return; }
         boolean md = flags.contains("--markdown");
         if (Files.exists(dir.resolve("config.txt")) && !md) System.out.println(Files.readString(dir.resolve("config.txt")));
@@ -165,11 +163,6 @@ public class Report {
                 : "\nProblems:\n  " + String.join("\n  ", out));
     }
 
-    /** The original harness' open-phase reference: the best app's median req/s at 64 connections. */
-    static long capacity(List<Step> closed) {
-        return (long) apps(closed).stream().mapToDouble(a -> median(closed, a, 64, s -> s.get("rps")))
-                .filter(d -> !Double.isNaN(d)).max().orElse(0);
-    }
 
     // ---- charts ------------------------------------------------------------------------------
 
@@ -177,6 +170,7 @@ public class Report {
 
     /** One grouped bar chart per metric: connection counts on the x axis, one bar per app. */
     static void charts(List<Step> steps, Path out) throws IOException {
+        if (steps.isEmpty()) { System.out.println("no all-out steps in this run: no charts"); return; }
         Files.createDirectories(out);
         chart(steps, out.resolve("throughput.svg"), "Throughput, all out (req/s, higher is better)", s -> s.get("rps"), "%,.0f");
         chart(steps, out.resolve("cpu-per-request.svg"), "CPU per request (µs, lower is better)", s -> s.get("cpu_secs") * 1e6 / s.get("responses"), "%.1f");

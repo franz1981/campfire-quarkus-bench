@@ -14,8 +14,8 @@
 #   --driver-cpus LIST     ... and the load driver's (Hyperfoil), never on the app's cores (e.g. 8-15)
 #   --apps a,b             quarkus, kotlin, rust (default: the matrix's)
 #   --conns a,b            all-out connection counts (default: the matrix's; profile: 1024)
-#   --reps N  --secs N     all-out repetitions and seconds per step (the fixed-rate phase uses the matrix's OPEN_REPS)
-#   --rate               then the fixed-rate phase: rates derived from this run's all-out results
+#   --reps N  --secs N     repetitions and seconds per step (default: the matrix's)
+#   --rate R,R...          fixed rates instead of all out: each app at each of these req/s, in turn
 #   --force                measure even if the preflight finds a problem
 #   --app A                (profile) the app: quarkus or kotlin
 #   --event E[,E...]       (profile) async-profiler events: cpu (default), alloc, wall, lock; several need --format jfr
@@ -196,7 +196,7 @@ preflight() {  # placement, frequency, other load, file limits; refuses (unless 
   gov=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_governor" 2> /dev/null || echo unknown)
   boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2> /dev/null || echo unknown)
   [ "$gov" = performance ] && [ "$boost" = 0 ] || log "note: governor $gov, boost $boost: for stable numbers fix the frequency (README.md)"
-  local max=0; for c in $CONNS $OPEN_CONNS; do [ "$c" -gt "$max" ] && max=$c; done
+  local max=0 c; for c in $CONNS $RATE_CONNS; do [ "$c" -gt "$max" ] && max=$c; done
   [ "$(ulimit -n)" -gt $((max * 2 + 1000)) ] || { log "the open-file limit ($(ulimit -n)) is too low for $max connections on each side"; bad=1; }
   # Nothing else running on those cores (both threads of each): under 2.5% busy per app CPU and 4% per
   # driver CPU over 2 s, 5 tries.
@@ -255,7 +255,7 @@ warm() {
 
 # One measured step: a Hyperfoil warmup phase then the measured phase, under the same load.
 #   closed: LOAD connections all out (bench/room.hf.yaml)
-#   open:   LOAD requests/s over OPEN_CONNS connections, each timed from when it was due (bench/room-rate.hf.yaml)
+#   open:   LOAD requests/s over RATE_CONNS connections, each timed from when it was due (bench/room-rate.hf.yaml)
 # The app's CPU is measured over the whole Hyperfoil run and divided by the responses of both phases;
 # busy CPUs by the run's wall time. Returns 1 if the app is no longer running.
 step() {
@@ -265,7 +265,7 @@ step() {
   c0=$(app_cpu_secs); a0=$(cpus_busy "$APP_CPUS"); l0=$(cpus_busy "$DRIVER_CPUS"); t0=$(now)
   case $kind in
     closed) hyperfoil "$run" -PCONNS="$load" -PUSERS="$load" -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" "$ROOT/bench/room.hf.yaml" ;;
-    open) hyperfoil "$run" -PCONNS="$OPEN_CONNS" -PRATE="$load" -PSESSIONS=$((load * 2)) -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" "$ROOT/bench/room-rate.hf.yaml" ;;
+    open) hyperfoil "$run" -PCONNS="$RATE_CONNS" -PRATE="$load" -PSESSIONS=$((load * 2)) -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" "$ROOT/bench/room-rate.hf.yaml" ;;
   esac > "$f.out" 2>&1 || true
   t1=$(now); a1=$(cpus_busy "$APP_CPUS"); l1=$(cpus_busy "$DRIVER_CPUS")
   if ! alive; then
@@ -304,29 +304,14 @@ cmd_run() {
       order=$APPS; [ $((rep % 2)) = 0 ] && order=$(tr ' ' '\n' <<< "$APPS" | tac | tr '\n' ' ')
       for app in $order; do
         start_app "$app" "$APP_CPUS"; warm "$app"
-        for load in $CONNS; do step closed "$app" "$rep" "$load" || break; done
+        if [ -n "$RATES" ]; then
+          for load in $RATES; do step open "$app" "$rep" "$load" || break; done
+        else
+          for load in $CONNS; do step closed "$app" "$rep" "$load" || break; done
+        fi
         stop_app
       done
     done
-    if [ "$OPEN" = 1 ]; then
-      # Offered rates: fractions of the best app's median all-out req/s at 64 connections.
-      local top f
-      top=$(report "$OUT" --capacity)
-      if [ "$top" -gt 0 ]; then
-        for rep in $(seq 1 "$OPEN_REPS"); do
-          order=$APPS; [ $((rep % 2)) = 0 ] && order=$(tr ' ' '\n' <<< "$APPS" | tac | tr '\n' ' ')
-          for app in $order; do
-            start_app "$app" "$APP_CPUS"; warm "$app"
-            for f in $OPEN_FRACTIONS; do
-              load=$(awk -v t="$top" -v f="$f" 'BEGIN { print int(t * f / 500) * 500 }')
-              [ "$load" -gt 0 ] || continue
-              step open "$app" "$rep" "$load" || break
-            done
-            stop_app
-          done
-        done
-      else log "no all-out result at 64 connections: skipping the fixed-rate phase"; fi
-    fi
     report "$OUT" | tee "$OUT/report.txt"
     report "$OUT" --charts
   done
@@ -334,7 +319,7 @@ cmd_run() {
 
 describe() {
   local cpu0; cpu0=$(cpu_list "$APP_CPUS" | head -1)
-  echo "matrix=$MATRIX apps=$APPS conns=$CONNS reps=$REPS secs=$SECS warmup=$WARMUP hf_warmup=$HF_WARMUP open=$OPEN open_reps=$OPEN_REPS open_conns=$OPEN_CONNS open_fractions=$OPEN_FRACTIONS"
+  echo "matrix=$MATRIX apps=$APPS reps=$REPS secs=$SECS warmup=$WARMUP hf_warmup=$HF_WARMUP $([ -n "$RATES" ] && echo "rates=$RATES rate_conns=$RATE_CONNS" || echo "conns=$CONNS")"
   echo "app_cpus=$APP_CPUS loadgen_cpus=$DRIVER_CPUS"
   echo "cpu=$(lscpu | sed -n 's/^Model name: *//p') kernel=$(uname -r) governor=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_governor" 2> /dev/null) boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2> /dev/null) max_khz=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_max_freq" 2> /dev/null)"
   echo "jdk_kotlin=$JDK_KOTLIN jdk_quarkus=$JDK_QUARKUS jvm_common=${JVM_COMMON[*]} jvm_quarkus=${JVM_QUARKUS[*]}"
@@ -442,7 +427,7 @@ case $command in
   ''|-h|--help|help) usage; exit 0 ;;
   report) report "$@"; exit ;;
 esac
-MATRIX=article APP_CPUS="" DRIVER_CPUS="" FORCE=0 EVENT=cpu FORMAT=html PROFILE_APP="" ARGS=()
+MATRIX=article APP_CPUS="" DRIVER_CPUS="" RATES="" FORCE=0 EVENT=cpu FORMAT=html PROFILE_APP="" ARGS=()
 declare -A override=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -454,7 +439,8 @@ while [ $# -gt 0 ]; do
     --conns) override[CONNS]=${2//,/ }; shift ;;
     --reps) override[REPS]=$2; shift ;;
     --secs) override[SECS]=$2; shift ;;
-    --rate) override[OPEN]=1 ;;
+    --rate) [[ ${2:-} =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "--rate needs the rates, e.g. --rate 20000,40000"
+      RATES=${2//,/ }; shift ;;
     --force) FORCE=1 ;;
     --event) EVENT=$2; shift ;;
     --format) FORMAT=$2; shift ;;
