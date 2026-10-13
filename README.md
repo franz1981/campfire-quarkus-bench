@@ -259,10 +259,15 @@ Kotlin port wrote all of it.
 
 | | Kotlin port (the article) | Quarkus, first working version | Quarkus, all of it (to 2026-10-13 13:47) |
 |---|---:|---:|---:|
-| wall-clock | ~24 h | 1.5 h | 25.4 h |
+| wall-clock (includes benchmark runs and waiting) | ~24 h, overnight included | 1.5 h | 25.4 h |
+| active (gaps under 15 minutes between messages) | not reported | 0.8 h | 16.4 h |
 | fresh tokens (generated + written to the prompt cache) | ~5.3M | 0.52M | 6.2M |
 | cache reads | ~410M | 33M | 696M |
 | code written | ~22,000 lines of Kotlin | ~1,400 lines of Java | ~2,650 lines of Java, 240 of tests |
+
+Tokens are spent only when the model takes a turn, not while a benchmark runs: most of the last
+column's wall-clock time was the machine measuring. Cache reads count the conversation re-read at
+every turn, so they grow with how often the session checked in, not only with the work done.
 
 "First working version": parity with Rust (0 different) and a first measurement against Kotlin, on
 one core, where it was still slower (18.5k vs 21.5k req/s). Everything after that (Quarkus 4, the
