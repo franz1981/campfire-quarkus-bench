@@ -242,7 +242,9 @@ the app's CPU time over the whole run divided by the responses of both phases.
 How this differs from DHH's runs and from the Kotlin article's, and why: [DIFFERENCES.md](DIFFERENCES.md).
 
 `./bench.sh profile --app quarkus --conns 1024` records a CPU flame graph of one app under all-out
-load with async-profiler, into `results/profiles/`. `--event alloc`, `wall` or `lock` record other
+load with async-profiler, into `results/profiles/`: 10 s at one sample per millisecond of CPU (a
+frame's samples are its CPU time in ms), the JVM started with `-XX:+DebugNonSafepoints` so inlined
+code is attributed to the right frame. `--event alloc`, `wall` or `lock` record other
 events; `--format jfr` writes JFR instead, and allows several events at once
 (`--event cpu,alloc,lock --format jfr`); `AP_OPTS` passes more async-profiler options.
 

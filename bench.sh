@@ -335,9 +335,12 @@ cmd_profile() {
   [ -n "$APP_CPUS" ] || place "${CORES%% *}"
   local conns=${override[CONNS]:-1024}; conns=${conns%% *}
   OUT=$ROOT/results/profiles; mkdir -p "$OUT"
+  # Debug information at every instruction, not only at safepoints: without it the JIT's inlined code
+  # is attributed to the nearest frame that has some, and flame graphs mislead.
+  JVM_COMMON+=(-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints)
   start_app "$PROFILE_APP" "$APP_CPUS"
   all_out "$OUT/hyperfoil-warmup" "$conns" "$WARMUP" > /dev/null 2>&1 || true
-  all_out "$OUT/hyperfoil-load" "$conns" $((SECS + 10)) > /dev/null 2>&1 &
+  all_out "$OUT/hyperfoil-load" "$conns" 20 > /dev/null 2>&1 &
   LOAD_PID=$!
   trap 'kill "$LOAD_PID" 2> /dev/null || true; stop_app' EXIT
   local f java
@@ -345,7 +348,9 @@ cmd_profile() {
   f=$OUT/$PROFILE_APP-${EVENT//,/+}-$(cpu_list "$APP_CPUS" | wc -l)c-c$conns.$FORMAT
   java=$(jdk "$JDK_QUARKUS")
   # shellcheck disable=SC2086  # AP_OPTS: words on purpose
-  (cd "$ROOT" && JAVA_HOME=$java jbang --quiet ap-loader profiler -e "$EVENT" -d "$SECS" ${AP_OPTS:-} -f "$f" "$APP_PID")
+  # 10 s, one sample per ms of CPU (cpu, wall): N samples = N ms, samples / 10,000 = cores busy on average.
+  local interval=(); case $EVENT in cpu|wall) interval=(-i 1ms) ;; esac
+  (cd "$ROOT" && JAVA_HOME=$java jbang --quiet ap-loader profiler -e "$EVENT" -d 10 "${interval[@]}" ${AP_OPTS:-} -f "$f" "$APP_PID")
   wait "$LOAD_PID" || true
   stop_app
   log "profile: $f"

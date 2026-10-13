@@ -74,6 +74,9 @@ results.
 
 CPU flame graphs at 1,024 connections, 4 cores (`./bench.sh profile --app ... --conns 1024`; open in a
 browser): [Quarkus](flamegraphs/quarkus-4c-1024conns-cpu.html), [Kotlin](flamegraphs/kotlin-4c-1024conns-cpu.html).
+Each is 10 s of async-profiler at one sample per millisecond of CPU, with `-XX:+DebugNonSafepoints`
+so that inlined code is attributed to the right frame: a frame's sample count is its CPU time in
+milliseconds.
 
 From the investigation, 2 cores, Quarkus at 1,024 and 16,384 connections: how young-GC card scanning
 grows with the number of connections ([NOTES.md](../NOTES.md)):
