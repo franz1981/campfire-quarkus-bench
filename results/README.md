@@ -15,6 +15,14 @@ JVM options and the commits; `report.txt` is the output of `./bench.sh report` o
 
 ## All out, 4 cores (medians of 3 reps)
 
+![Throughput](runs/20261013-143448-4c/charts/throughput.svg)
+
+![CPU per request](runs/20261013-143448-4c/charts/cpu-per-request.svg)
+
+![Memory](runs/20261013-143448-4c/charts/memory.svg)
+
+The same data, as numbers:
+
 | conns | Kotlin req/s | Quarkus req/s | Rust req/s | Quarkus / Kotlin | µs CPU/req K / Q / R | p99 ms K / Q / R | RSS MB K / Q / R |
 |---:|---:|---:|---:|---:|---:|---:|---:|
 | 1 | 15,006 | 16,710 | 9,910 | 111% | 50.6 / 45.0 / 96.4 | 0.1 / 0.1 / 0.1 | 224 / 238 / 52 |

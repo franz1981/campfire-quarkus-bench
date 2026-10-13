@@ -16,6 +16,7 @@ import java.util.stream.Stream;
  *
  *   jbang bench/Report.java RUN_DIR [--markdown]    the tables (Markdown with --markdown)
  *   jbang bench/Report.java RUN_DIR --capacity       the best app's median req/s at 64 connections
+ *   jbang bench/Report.java RUN_DIR --charts         SVG charts of the all-out medians into RUN_DIR/charts/
  */
 public class Report {
 
@@ -34,6 +35,7 @@ public class Report {
         List<Step> closed = all.stream().filter(s -> s.kind().equals("closed") && !s.failed()).toList();
         List<Step> open = all.stream().filter(s -> s.kind().equals("open") && !s.failed()).toList();
         if (flags.contains("--capacity")) { System.out.println(capacity(closed)); return; }
+        if (flags.contains("--charts")) { charts(closed, dir.resolve("charts")); return; }
         boolean md = flags.contains("--markdown");
         if (Files.exists(dir.resolve("config.txt")) && !md) System.out.println(Files.readString(dir.resolve("config.txt")));
         if (!closed.isEmpty()) closedTables(closed, md);
@@ -168,6 +170,67 @@ public class Report {
         return (long) apps(closed).stream().mapToDouble(a -> median(closed, a, 64, s -> s.get("rps")))
                 .filter(d -> !Double.isNaN(d)).max().orElse(0);
     }
+
+    // ---- charts ------------------------------------------------------------------------------
+
+    static final Map<String, String> COLOR = Map.of("kotlin", "#7F52FF", "quarkus", "#4695EB", "rust", "#CE7B3C");
+
+    /** One grouped bar chart per metric: connection counts on the x axis, one bar per app. */
+    static void charts(List<Step> steps, Path out) throws IOException {
+        Files.createDirectories(out);
+        chart(steps, out.resolve("throughput.svg"), "Throughput, all out (req/s, higher is better)", s -> s.get("rps"), "%,.0f");
+        chart(steps, out.resolve("cpu-per-request.svg"), "CPU per request (µs, lower is better)", s -> s.get("cpu_secs") * 1e6 / s.get("responses"), "%.1f");
+        chart(steps, out.resolve("memory.svg"), "Resident memory at the end of each step (RSS MB, lower is better)", s -> s.get("rss_mb"), "%.0f");
+        System.out.println("charts: " + out);
+    }
+
+    static void chart(List<Step> steps, Path file, String title, ToDoubleFunction<Step> f, String format) throws IOException {
+        List<String> apps = apps(steps);
+        List<Integer> loads = loads(steps);
+        double max = 0;
+        for (String a : apps) for (int l : loads) { double m = median(steps, a, l, f); if (!Double.isNaN(m)) max = Math.max(max, m); }
+        max = niceCeiling(max);
+        int left = 70, right = 20, top = 60, bottom = 60, groupWidth = 30 + 34 * apps.size(), plotHeight = 300;
+        int width = left + right + groupWidth * loads.size(), height = top + plotHeight + bottom;
+        StringBuilder svg = new StringBuilder();
+        svg.append(String.format(Locale.ROOT, "<svg xmlns='http://www.w3.org/2000/svg' width='%d' height='%d' font-family='sans-serif' font-size='12'>%n", width, height));
+        svg.append(String.format(Locale.ROOT, "<rect width='%d' height='%d' fill='white'/>%n", width, height));
+        svg.append(String.format(Locale.ROOT, "<text x='%d' y='22' font-size='15' font-weight='bold'>%s</text>%n", left, esc(title)));
+        int lx = left;  // legend
+        for (String a : apps) {
+            svg.append(String.format(Locale.ROOT, "<rect x='%d' y='32' width='12' height='12' fill='%s'/><text x='%d' y='43'>%s</text>%n", lx, COLOR.getOrDefault(a, "#888"), lx + 16, a));
+            lx += 30 + 8 * a.length();
+        }
+        for (int i = 0; i <= 4; i++) {  // grid and y labels
+            double v = max * i / 4; int y = top + plotHeight - (int) Math.round(plotHeight * i / 4.0);
+            svg.append(String.format(Locale.ROOT, "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#ddd'/>%n", left, y, width - right, y));
+            svg.append(String.format(Locale.ROOT, "<text x='%d' y='%d' text-anchor='end' fill='#555'>%s</text>%n", left - 6, y + 4, String.format(Locale.ROOT, "%,.0f", v)));
+        }
+        for (int g = 0; g < loads.size(); g++) {
+            int x0 = left + g * groupWidth + 15;
+            for (int i = 0; i < apps.size(); i++) {
+                double m = median(steps, apps.get(i), loads.get(g), f);
+                if (Double.isNaN(m)) continue;
+                int h = (int) Math.round(plotHeight * m / max), x = x0 + 34 * i, y = top + plotHeight - h;
+                svg.append(String.format(Locale.ROOT, "<rect x='%d' y='%d' width='30' height='%d' fill='%s'><title>%s: %s</title></rect>%n",
+                        x, y, h, COLOR.getOrDefault(apps.get(i), "#888"), apps.get(i), String.format(Locale.ROOT, format, m)));
+                svg.append(String.format(Locale.ROOT, "<text x='%d' y='%d' text-anchor='middle' font-size='9' fill='#333'>%s</text>%n",
+                        x + 15, y - 3, m >= 1000 ? String.format(Locale.ROOT, m >= 10_000 ? "%.0fk" : "%.1fk", m / 1000) : String.format(Locale.ROOT, format, m)));
+            }
+            svg.append(String.format(Locale.ROOT, "<text x='%d' y='%d' text-anchor='middle'>%,d</text>%n", x0 + 17 * apps.size() - 2, top + plotHeight + 18, loads.get(g)));
+        }
+        svg.append(String.format(Locale.ROOT, "<text x='%d' y='%d' text-anchor='middle' fill='#555'>connections</text>%n", left + (width - left - right) / 2, height - 12));
+        svg.append("</svg>\n");
+        Files.writeString(file, svg.toString());
+    }
+
+    static double niceCeiling(double v) {
+        double step = Math.pow(10, Math.floor(Math.log10(v)));
+        for (double m : new double[] {1, 2, 2.5, 5, 10}) if (m * step >= v) return m * step;
+        return 10 * step;
+    }
+
+    static String esc(String s) { return s.replace("&", "&amp;").replace("<", "&lt;"); }
 
     // ---- helpers -----------------------------------------------------------------------------
 

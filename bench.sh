@@ -328,6 +328,7 @@ cmd_run() {
       else log "no all-out result at 64 connections: skipping the fixed-rate phase"; fi
     fi
     report "$OUT" | tee "$OUT/report.txt"
+    report "$OUT" --charts
   done
 }
 

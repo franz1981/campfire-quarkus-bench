@@ -1,0 +1,60 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='882' height='420' font-family='sans-serif' font-size='12'>
+<rect width='882' height='420' fill='white'/>
+<text x='70' y='22' font-size='15' font-weight='bold'>CPU per request (µs, lower is better)</text>
+<rect x='70' y='32' width='12' height='12' fill='#7F52FF'/><text x='86' y='43'>kotlin</text>
+<rect x='148' y='32' width='12' height='12' fill='#4695EB'/><text x='164' y='43'>quarkus</text>
+<rect x='234' y='32' width='12' height='12' fill='#CE7B3C'/><text x='250' y='43'>rust</text>
+<line x1='70' y1='360' x2='862' y2='360' stroke='#ddd'/>
+<text x='64' y='364' text-anchor='end' fill='#555'>0</text>
+<line x1='70' y1='285' x2='862' y2='285' stroke='#ddd'/>
+<text x='64' y='289' text-anchor='end' fill='#555'>25</text>
+<line x1='70' y1='210' x2='862' y2='210' stroke='#ddd'/>
+<text x='64' y='214' text-anchor='end' fill='#555'>50</text>
+<line x1='70' y1='135' x2='862' y2='135' stroke='#ddd'/>
+<text x='64' y='139' text-anchor='end' fill='#555'>75</text>
+<line x1='70' y1='60' x2='862' y2='60' stroke='#ddd'/>
+<text x='64' y='64' text-anchor='end' fill='#555'>100</text>
+<rect x='85' y='208' width='30' height='152' fill='#7F52FF'><title>kotlin: 50.6</title></rect>
+<text x='100' y='205' text-anchor='middle' font-size='9' fill='#333'>50.6</text>
+<rect x='119' y='225' width='30' height='135' fill='#4695EB'><title>quarkus: 45.0</title></rect>
+<text x='134' y='222' text-anchor='middle' font-size='9' fill='#333'>45.0</text>
+<rect x='153' y='71' width='30' height='289' fill='#CE7B3C'><title>rust: 96.4</title></rect>
+<text x='168' y='68' text-anchor='middle' font-size='9' fill='#333'>96.4</text>
+<text x='134' y='378' text-anchor='middle'>1</text>
+<rect x='217' y='179' width='30' height='181' fill='#7F52FF'><title>kotlin: 60.3</title></rect>
+<text x='232' y='176' text-anchor='middle' font-size='9' fill='#333'>60.3</text>
+<rect x='251' y='276' width='30' height='84' fill='#4695EB'><title>quarkus: 28.1</title></rect>
+<text x='266' y='273' text-anchor='middle' font-size='9' fill='#333'>28.1</text>
+<rect x='285' y='136' width='30' height='224' fill='#CE7B3C'><title>rust: 74.8</title></rect>
+<text x='300' y='133' text-anchor='middle' font-size='9' fill='#333'>74.8</text>
+<text x='266' y='378' text-anchor='middle'>16</text>
+<rect x='349' y='230' width='30' height='130' fill='#7F52FF'><title>kotlin: 43.2</title></rect>
+<text x='364' y='227' text-anchor='middle' font-size='9' fill='#333'>43.2</text>
+<rect x='383' y='286' width='30' height='74' fill='#4695EB'><title>quarkus: 24.6</title></rect>
+<text x='398' y='283' text-anchor='middle' font-size='9' fill='#333'>24.6</text>
+<rect x='417' y='153' width='30' height='207' fill='#CE7B3C'><title>rust: 69.2</title></rect>
+<text x='432' y='150' text-anchor='middle' font-size='9' fill='#333'>69.2</text>
+<text x='398' y='378' text-anchor='middle'>64</text>
+<rect x='481' y='259' width='30' height='101' fill='#7F52FF'><title>kotlin: 33.7</title></rect>
+<text x='496' y='256' text-anchor='middle' font-size='9' fill='#333'>33.7</text>
+<rect x='515' y='288' width='30' height='72' fill='#4695EB'><title>quarkus: 24.1</title></rect>
+<text x='530' y='285' text-anchor='middle' font-size='9' fill='#333'>24.1</text>
+<rect x='549' y='178' width='30' height='182' fill='#CE7B3C'><title>rust: 60.6</title></rect>
+<text x='564' y='175' text-anchor='middle' font-size='9' fill='#333'>60.6</text>
+<text x='530' y='378' text-anchor='middle'>256</text>
+<rect x='613' y='264' width='30' height='96' fill='#7F52FF'><title>kotlin: 31.9</title></rect>
+<text x='628' y='261' text-anchor='middle' font-size='9' fill='#333'>31.9</text>
+<rect x='647' y='288' width='30' height='72' fill='#4695EB'><title>quarkus: 24.0</title></rect>
+<text x='662' y='285' text-anchor='middle' font-size='9' fill='#333'>24.0</text>
+<rect x='681' y='153' width='30' height='207' fill='#CE7B3C'><title>rust: 68.9</title></rect>
+<text x='696' y='150' text-anchor='middle' font-size='9' fill='#333'>68.9</text>
+<text x='662' y='378' text-anchor='middle'>1,024</text>
+<rect x='745' y='255' width='30' height='105' fill='#7F52FF'><title>kotlin: 35.1</title></rect>
+<text x='760' y='252' text-anchor='middle' font-size='9' fill='#333'>35.1</text>
+<rect x='779' y='280' width='30' height='80' fill='#4695EB'><title>quarkus: 26.7</title></rect>
+<text x='794' y='277' text-anchor='middle' font-size='9' fill='#333'>26.7</text>
+<rect x='813' y='134' width='30' height='226' fill='#CE7B3C'><title>rust: 75.5</title></rect>
+<text x='828' y='131' text-anchor='middle' font-size='9' fill='#333'>75.5</text>
+<text x='794' y='378' text-anchor='middle'>4,096</text>
+<text x='466' y='408' text-anchor='middle' fill='#555'>connections</text>
+</svg>

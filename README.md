@@ -35,12 +35,9 @@ Open a PR with your change and its `results/runs/...` directory.
 
 ## Results
 
-On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores, all out (req/s, medians of 3 reps):
+On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores, all out (medians of 3 reps):
 
-| connections | Kotlin | Quarkus | Rust |
-|---:|---:|---:|---:|
-| 16 | 47,119 | 107,621 | 44,572 |
-| 1,024 | 98,640 | 133,580 | 48,048 |
+![Throughput](results/runs/20261013-143448-4c/charts/throughput.svg)
 
 Quarkus also uses the least CPU per request, and more memory than Kotlin. The full tables, CPU per
 request, memory and flame graphs: [results/README.md](results/README.md). How the earlier designs compared, run by run:
@@ -175,7 +172,8 @@ the load driver twice as many, never on the app's cores. To choose them yourself
 lists them. Runs on one machine wait for each other (a lock file, `BENCH_LOCK`). A matrix is a small file of settings in
 `bench/matrix/`; add your own.
 
-Each run writes `results/runs/<date>-<cores>c/` and prints its tables at the end;
+Each run writes `results/runs/<date>-<cores>c/`, prints its tables at the end and draws SVG charts into its
+`charts/` (throughput, CPU per request, memory);
 `./bench.sh report <dir>` prints them again (`--markdown` for a README). Problems seen on either side
 (client errors, connections that never opened, listen-queue overflows, time spent waiting for a
 connection, error lines in an app's log, a saturated load driver) are listed under the tables.
