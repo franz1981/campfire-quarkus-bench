@@ -12,93 +12,101 @@ import campfire.db.Session;
 import campfire.db.User;
 
 /**
- * A request's reads on an event loop: the session, user and room membership the SQLite stage read
- * for it ({@link SqliteStage.Prefetched}). Any other read, or one with other arguments, needs SQLite:
- * the request is halted and runs again on the stage ({@link Staged#needStage}).
+ * A request's reads from the session, user and room membership the SQLite stage read for it
+ * ({@link SqliteStage.Prefetched}). Any other read, or one with other arguments, goes to
+ * {@code others}: on a {@link RequestPool} thread the stage's forwarded reads; on an event loop none,
+ * and the request is halted to run again on the pool ({@link Staged#needStage}).
  */
-record PrefetchedReads(SqliteStage.Prefetched prefetched) implements Reads {
+record PrefetchedReads(SqliteStage.Prefetched prefetched, Reads others) implements Reads {
+    private <T> T other() {
+        return Staged.needStage();
+    }
+
     @Override
     public Session sessionByToken(String token) {
-        return token.equals(prefetched.token) ? prefetched.session : Staged.needStage();
+        if (token.equals(prefetched.token)) return prefetched.session;
+        return others != null ? others.sessionByToken(token) : other();
     }
 
     @Override
     public User user(long id) {
-        return prefetched.session != null && prefetched.session.getUserId() == id ? prefetched.user : Staged.needStage();
+        if (prefetched.session != null && prefetched.session.getUserId() == id) return prefetched.user;
+        return others != null ? others.user(id) : other();
     }
 
     @Override
     public Room roomForUser(long userId, long roomId) {
-        return prefetched.user != null && prefetched.user.getId() == userId && prefetched.roomId == roomId ? prefetched.room : Staged.needStage();
+        if (prefetched.user != null && prefetched.user.getId() == userId && prefetched.roomId == roomId) return prefetched.room;
+        return others != null ? others.roomForUser(userId, roomId) : other();
     }
 
     @Override
     public boolean banned(String ipAddress) {
-        return Staged.needStage();
+        return others != null ? others.banned(ipAddress) : other();
     }
 
     @Override
     public User authenticateBot(String botKey) {
-        return Staged.needStage();
+        return others != null ? others.authenticateBot(botKey) : other();
     }
 
     @Override
     public Long originalRoomId() {
-        return Staged.needStage();
+        return others != null ? others.originalRoomId() : other();
     }
 
     @Override
     public Long roomIdForUser(long userId, long roomId) {
-        return Staged.needStage();
+        return others != null ? others.roomIdForUser(userId, roomId) : other();
     }
 
     @Override
     public Long firstRoomIdForUser(long userId) {
-        return Staged.needStage();
+        return others != null ? others.firstRoomIdForUser(userId) : other();
     }
 
     @Override
     public String accountJoinCode() {
-        return Staged.needStage();
+        return others != null ? others.accountJoinCode() : other();
     }
 
     @Override
     public LayoutAccount layoutAccount() {
-        return Staged.needStage();
+        return others != null ? others.layoutAccount() : other();
     }
 
     @Override
     public Room room(long id) {
-        return Staged.needStage();
+        return others != null ? others.room(id) : other();
     }
 
     @Override
     public List<User> roomUsers(long roomId) {
-        return Staged.needStage();
+        return others != null ? others.roomUsers(roomId) : other();
     }
 
     @Override
     public <F> List<PageMessage<F>> lastPage(long roomId, Function<MessageKey, F> fragment) {
-        return Staged.needStage();
+        return others != null ? others.lastPage(roomId, fragment) : other();
     }
 
     @Override
     public boolean paged(long roomId) {
-        return Staged.needStage();
+        return others != null ? others.paged(roomId) : other();
     }
 
     @Override
     public String richTextBody(String recordType, long recordId, String name) {
-        return Staged.needStage();
+        return others != null ? others.richTextBody(recordType, recordId, name) : other();
     }
 
     @Override
     public boolean hasAttachedBlob(String recordType, long recordId, String name) {
-        return Staged.needStage();
+        return others != null ? others.hasAttachedBlob(recordType, recordId, name) : other();
     }
 
     @Override
     public List<Boost> boosts(long messageId) {
-        return Staged.needStage();
+        return others != null ? others.boosts(messageId) : other();
     }
 }

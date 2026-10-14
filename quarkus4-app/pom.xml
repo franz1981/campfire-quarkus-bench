@@ -11,7 +11,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <quarkus.platform.version>4.0.0.Beta1</quarkus.platform.version>
         <!-- The Kotlin port's modules, installed by scripts/install-kotlin-libs.sh (its git sha). -->
-        <campfire.kotlin.version>87436f3</campfire.kotlin.version>
+        <!-- the Kotlin port's modules from upstream/once-campfire-kotlin-pooled (bench.sh setup installs them) -->
+        <campfire.kotlin.version>6cc0ae8</campfire.kotlin.version>
         <kotlin.version>2.4.20</kotlin.version>
     </properties>
 

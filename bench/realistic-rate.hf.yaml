@@ -1,0 +1,62 @@
+# The realistic workload at a fixed rate (open model): as room-rate.hf.yaml, but each request is one
+# of the pages of the run's sessions (PAGES, written by bench/Workload.java prepare), picked at random.
+name: campfire-realistic-rate
+threads: !param THREADS 4
+http:
+  host: !concat [ "http://127.0.0.1:", !param PORT 4390 ]
+  allowHttp2: false
+  useHttpCache: false
+  sharedConnections: !param CONNS 2048
+# After `http` (which registers the HTTP plugin). Time each request from its scheduled start (no
+# coordinated omission); send exactly the request below: no per-session user-agent, no cookies
+# echoed from responses.
+ergonomics:
+  compensateInternalLatency: true
+  userAgentFromSession: false
+  repeatCookies: false
+phases:
+- warmup:
+    constantRate:
+      usersPerSec: !param RATE 10000
+      # Evenly spaced arrivals (Hyperfoil's default, variance: true, is Poisson). oha 1.16 schedules request i
+      # at start + i/rate too, but wakes on tokio's millisecond timer, releasing each millisecond's requests together.
+      variance: false
+      duration: !param WARMUP 5s
+      maxSessions: !param SESSIONS 20000
+      sessionLimitPolicy: CONTINUE
+      scenario: &scenario
+        maxRequests: 1
+        maxSequences: 1
+        orderedSequences:
+        - fetch:
+          # a page of the realistic workload: a session and one of its person's rooms, at random
+          # (bench/Workload.java prepare: "cookie header,room id,person id" per line)
+          - randomCsvRow:
+              file: !param PAGES
+              columns:
+                0: cookie
+                1: room
+          - httpRequest:
+              GET:
+                pattern: /rooms/${room}
+              # Hyperfoil's default SLA fails a phase if any request waits for a free connection, which
+              # also cancels the measured phase after a warmup; bench.sh reports that wait instead.
+              sla:
+              - blockedRatio: 1000
+              # The request oha sent (verified byte for byte, header order aside).
+              headers:
+                accept: "*/*"
+                user-agent: curl/8.7.1
+                cookie:
+                  fromVar: cookie
+                accept-encoding: gzip
+- main:
+    constantRate:
+      startAfterStrict: warmup
+      usersPerSec: !param RATE 10000
+      variance: false
+      duration: !param DURATION 15s
+      maxDuration: !param MAX_DURATION 60s
+      maxSessions: !param SESSIONS 20000
+      sessionLimitPolicy: CONTINUE
+      scenario: *scenario

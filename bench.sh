@@ -14,8 +14,15 @@
 #   --driver-cpus LIST     ... and the load driver's (Hyperfoil), never on the app's cores (e.g. 8-15)
 #   --apps a,b             quarkus, kotlin, rust (default: the matrix's)
 #   --conns a,b            all-out connection counts (default: the matrix's; profile: 1024)
+#                          profile: the load of a run's step: --matrix realistic at its first rate (with the
+#                          writer), else the first --rate, else all out at the first --conns
 #   --reps N  --secs N     repetitions and seconds per step (default: the matrix's)
 #   --rate R,R...          fixed rates instead of all out: each app at each of these req/s, in turn
+#                          (matrix realistic: page loads/s, with the writes that go with them; see below)
+#   --page-every S --presence-every S --message-every S --sessions N --message-room ID|all
+#                          (matrix realistic) a visible tab loads a room page every PAGE_EVERY s, refreshes its
+#                          presence every PRESENCE_EVERY s and posts a message every MESSAGE_EVERY s: per page
+#                          load, PAGE_EVERY/PRESENCE_EVERY presence commits and PAGE_EVERY/MESSAGE_EVERY messages
 #   --force                measure even if the preflight finds a problem
 #   --app A                (profile) the app: quarkus or kotlin
 #   --event E[,E...]       (profile) async-profiler events: cpu (default), alloc, wall, lock; several need --format jfr
@@ -31,6 +38,9 @@ JDK_KOTLIN=${JDK_KOTLIN:-25.0.3-tem}     # the Kotlin port as published
 JDK_QUARKUS=${JDK_QUARKUS:-27.0.0-tem}   # Quarkus: build and run
 PORT=4390 ROOM=486777696
 RUST=$ROOT/upstream/once-campfire-rust KOTLIN=$ROOT/upstream/once-campfire-kotlin
+# The Kotlin port's modules as the Quarkus app uses them: a fork whose per-thread objects are pooled on
+# virtual threads (DIFFERENCES.md); the Kotlin app itself always runs from $KOTLIN, as published.
+KOTLIN_POOLED=$ROOT/upstream/once-campfire-kotlin-pooled
 WORK=$ROOT/target                        # app run directories, build logs (not committed)
 COOKIE=$(cat "$ROOT/fixtures/cookie.txt")
 
@@ -68,8 +78,9 @@ cmd_setup() {
   cd "$ROOT"
 
   log "the ports at the measured commits (git submodules)"
-  git submodule update --init upstream/once-campfire-rust upstream/once-campfire-kotlin
+  git submodule update --init upstream/once-campfire-rust upstream/once-campfire-kotlin upstream/once-campfire-kotlin-pooled
   git -C "$KOTLIN" submodule update --init --depth 1 reference
+  git -C "$KOTLIN_POOLED" submodule update --init --depth 1 reference
 
   mkdir -p "$WORK"
   log "building the Rust port, as published ($WORK/build-rust.log)"
@@ -84,9 +95,13 @@ cmd_setup() {
   (cd "$KOTLIN" && JAVA_HOME=$jk ./gradlew -q --no-daemon -Pkotlin.compiler.execution.strategy=in-process :campfire:installDist) \
     > "$WORK/build-kotlin.log" 2>&1 || die "Kotlin build failed: $WORK/build-kotlin.log"
 
+  log "building the Kotlin port's modules for the Quarkus app (the fork in upstream/once-campfire-kotlin-pooled)"
+  (cd "$KOTLIN_POOLED" && JAVA_HOME=$jk ./gradlew -q --no-daemon -Pkotlin.compiler.execution.strategy=in-process :campfire:installDist) \
+    > "$WORK/build-kotlin-pooled.log" 2>&1 || die "Kotlin (pooled) build failed: $WORK/build-kotlin-pooled.log"
+
   log "building the Quarkus app (it uses the Kotlin port's Rails-format modules as jars)"
-  local version m lib=$KOTLIN/campfire/build/install/campfire/lib
-  version=$(git -C "$KOTLIN" rev-parse --short HEAD)
+  local version m lib=$KOTLIN_POOLED/campfire/build/install/campfire/lib
+  version=$(git -C "$KOTLIN_POOLED" rev-parse --short HEAD)
   : > "$WORK/build-quarkus.log"
   for m in ruby-compat rails-compat routes db kit assets richtext views campfire; do
     (cd quarkus4-app && JAVA_HOME=$jq ./mvnw -q -B install:install-file -Dfile="$lib/$m.jar" \
@@ -104,7 +119,7 @@ start_app() {  # APP CPUS: on a fresh copy of the seed, pinned, until /up answer
   local app=$1 cpus=$2 dir=$WORK/run-$1-$PORT
   ! curl -fs -o /dev/null "http://127.0.0.1:$PORT/up" || die "something already answers on port $PORT"
   rm -rf "$dir"; mkdir -p "$dir/db" "$dir/files"
-  cp "$ROOT/fixtures/seed.sqlite3" "$dir/db/production.sqlite3"
+  cp "$SEED_DB" "$dir/db/production.sqlite3"
   local env=(RAILS_LOG_LEVEL=warn LOG_REQUESTS=false RAILS_MAX_THREADS=5 HTTP_PORT=$PORT TARGET_PORT=$((PORT + 1))
     CAMPFIRE_STORAGE_PATH="$dir" CAMPFIRE_DATABASE_PATH="$dir/db/production.sqlite3" CAMPFIRE_FILES_PATH="$dir/files")
   local cmd java
@@ -128,12 +143,13 @@ start_app() {  # APP CPUS: on a fresh copy of the seed, pinned, until /up answer
   done
   tail -20 "$OUT/$app.log" >&2; die "$app didn't start"
 }
+SEED_DB=$ROOT/fixtures/seed.sqlite3  # the realistic workload swaps in its prepared copy
 stop_app() {
   [ -n "$APP_PID" ] || return 0
   kill "$APP_PID" 2> /dev/null || true; wait "$APP_PID" 2> /dev/null || true; APP_PID=""
 }
 alive() { kill -0 "$APP_PID" 2> /dev/null; }
-trap stop_app EXIT
+trap 'stop_writer; stop_app' EXIT
 
 # ---- what the machine does -------------------------------------------------------------------
 app_cpu_secs() { awk -v hz="$(getconf CLK_TCK)" '{ printf "%.3f", ($14 + $15) / hz }' "/proc/$APP_PID/stat"; }
@@ -185,6 +201,7 @@ place() {
   [ ${#lg[@]} -gt 0 ] || die "no core left for the load driver; use --cores or --app-cpus and --driver-cpus"
   [ ${#lg[@]} -ge $((cores * 2)) ] || log "note: the load driver gets ${#lg[@]} cores, not $((cores * 2)); watch the report for a saturated driver"
   APP_CPUS=$(IFS=,; echo "${app[*]}") DRIVER_CPUS=$(IFS=,; echo "${lg[*]}")
+  SIDE_CPUS=""; [ "$skip" = 1 ] && SIDE_CPUS=$(siblings "${cpus[0]}")  # the core left to the OS (the workload's writer)
 }
 
 preflight() {  # placement, frequency, other load, file limits; refuses (unless --force) when the result would mislead
@@ -196,7 +213,7 @@ preflight() {  # placement, frequency, other load, file limits; refuses (unless 
   gov=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_governor" 2> /dev/null || echo unknown)
   boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2> /dev/null || echo unknown)
   [ "$gov" = performance ] && [ "$boost" = 0 ] || log "note: governor $gov, boost $boost: for stable numbers fix the frequency (README.md)"
-  local max=0 c; for c in $CONNS $RATE_CONNS; do [ "$c" -gt "$max" ] && max=$c; done
+  local max=0 c; for c in ${CONNS:-} $RATE_CONNS; do [ "$c" -gt "$max" ] && max=$c; done
   [ "$(ulimit -n)" -gt $((max * 2 + 1000)) ] || { log "the open-file limit ($(ulimit -n)) is too low for $max connections on each side"; bad=1; }
   # Nothing else running on those cores (both threads of each): under 2.5% busy per app CPU and 4% per
   # driver CPU over 2 s, 5 tries.
@@ -222,23 +239,77 @@ report() {  # UTF-8 whatever the locale: the tables use µ and the chart █
 # ---- Hyperfoil -------------------------------------------------------------------------------
 hyperfoil() {  # RUN_DIR ARGS: Hyperfoil 0.29.3 (jbang-catalog.json) on the driver CPUs, its run data under RUN_DIR
   local run=$1 java; shift; java=$(jdk "$JDK_KOTLIN")
+  local args=(-PPORT="$PORT" -PROOM="$ROOM" -PCOOKIE="$COOKIE" -PTHREADS="$(cpu_list "$DRIVER_CPUS" | wc -l)" "$@")
+  if [ "$WORKLOAD" = realistic ]; then  # a template's files are never read from disk (Hyperfoil asks to upload them)
+    mkdir -p "$run"; render "${args[-1]}" "$run/scenario.hf.yaml" "${args[@]:0:${#args[@]}-1}"; args=("$run/scenario.hf.yaml")
+  fi
   (cd "$ROOT" && JAVA_HOME=$java taskset -c "$DRIVER_CPUS" jbang --quiet --java-options=-Xmx4g \
     --java-options=-Dio.hyperfoil.rootdir="$run" --java-options=-Dio.hyperfoil.cpu.watchdog.idle.threshold=0.0 hyperfoil \
-    -PPORT="$PORT" -PROOM="$ROOM" -PCOOKIE="$COOKIE" -PTHREADS="$(cpu_list "$DRIVER_CPUS" | wc -l)" "$@")
+    "${args[@]}" < /dev/null)
+}
+render() {  # TEMPLATE OUT -PNAME=VALUE...: the template with every !param replaced (given value, else its default)
+  local tpl=$1 out=$2 kv e=(); shift 2
+  local v; for kv in "$@"; do  # the value escaped for sed's replacement (\, the | delimiter, &)
+    kv=${kv#-P}; v=${kv#*=}; v=${v//\\/\\\\}; v=${v//|/\\|}; v=${v//&/\\&}
+    e+=(-e "s|!param ${kv%%=*}( [^] ,]+)?([] ,]\|$)|$v\2|g")
+  done
+  sed -E "${e[@]}" -e 's/!param [A-Z_]+ ([^] ,]+)/\1/g' "$tpl" > "$out"
+  ! grep -q '!param' "$out" || die "$out: a parameter without a value"
 }
 all_out() {  # RUN_DIR CONNS SECS: the closed-loop scenario, no warmup phase of its own
-  hyperfoil "$1" -PCONNS="$2" -PUSERS="$2" -PWARMUP=1s -PDURATION="$3s" "$ROOT/bench/room.hf.yaml"
+  hyperfoil "$1" -PCONNS="$2" -PUSERS="$2" -PWARMUP=1s -PDURATION="$3s" -PPAGES="$OUT/workload/pages.csv" "$ROOT/bench/$SCENARIO.hf.yaml"
 }
 
 # The request every load step sends (bench/*.hf.yaml), with curl: the decoded body to stdout.
-fetch() {
-  curl -fsS --compressed -A curl/8.7.1 -H 'accept: */*' -H "cookie: $COOKIE" -H 'accept-encoding: gzip' "http://127.0.0.1:$PORT/rooms/$ROOM"
+fetch() {  # [COOKIE ROOM]: the room page as the load sends it, decoded
+  curl -fsS --compressed -A curl/8.7.1 -H 'accept: */*' -H "cookie: ${1:-$COOKIE}" -H 'accept-encoding: gzip' "http://127.0.0.1:$PORT/rooms/${2:-$ROOM}"
+}
+
+# ---- the realistic workload (matrix realistic, bench/Workload.java) ---------------------------
+# Many sessions over the seed's people, each request one of its person's rooms at random, while a
+# writer outside the apps commits presence and messages to the app's database: the same rows for
+# every app. Caches stay on.
+workload() {  # jbang bench/Workload.java ARGS
+  JAVA_HOME=$(jdk "$JDK_QUARKUS") jbang --quiet --java-options=--enable-native-access=ALL-UNNAMED "$ROOT/bench/Workload.java" "$@"
+}
+prepare_workload() {  # the run's database and pages; one page per (person, room) to check
+  [ "$WORKLOAD" = realistic ] || return 0
+  local secret; secret=$(sed -n 's/^SECRET_KEY_BASE=//p' "$RUST/parity/.env.reference")
+  mkdir -p "$OUT/workload"
+  workload prepare "$ROOT/fixtures/seed.sqlite3" "$OUT/workload/db.sqlite3" "$OUT/workload/pages.csv" "$SESSIONS" "$secret" 2> /dev/null \
+    | tee "$OUT/workload/prepare.txt" >&2
+  awk -F, '!seen[$2 "," $3]++' "$OUT/workload/pages.csv" > "$OUT/workload/checks.csv"
+  SEED_DB=$OUT/workload/db.sqlite3
+}
+WRITER_PID=""
+start_writer() {  # APP OUT_FILE PRESENCE_PER_SEC MESSAGES_PER_SEC: the writer on the app's database, on the OS's core
+  [ "$WORKLOAD" = realistic ] || return 0
+  local pin=(); [ -n "${SIDE_CPUS:-}" ] && pin=(taskset -c "$SIDE_CPUS")
+  [ -n "${SIDE_CPUS:-}" ] || log "note: with --app-cpus/--driver-cpus the writer is not pinned (it may share their cores)"
+  # jbang execs the JVM: WRITER_PID is the writer itself, and SIGTERM reaches its exit report
+  JAVA_HOME=$(jdk "$JDK_QUARKUS") "${pin[@]}" jbang --quiet --java-options=--enable-native-access=ALL-UNNAMED "$ROOT/bench/Workload.java" \
+    write "$WORK/run-$1-$PORT/db/production.sqlite3" "$3" "$4" "$MESSAGE_ROOM" > "$2" 2> "${2%.txt}.err" 9>&- &
+  WRITER_PID=$!
+}
+stop_writer() {
+  [ -n "$WRITER_PID" ] || return 0
+  kill -TERM "$WRITER_PID" 2> /dev/null || true; wait "$WRITER_PID" 2> /dev/null || true; WRITER_PID=""
 }
 
 # The Rust port's page, fetched once per run: what every app must serve, byte for byte.
 reference() {
   start_app rust "$APP_CPUS"
   fetch > "$OUT/expected.html" || die "Rust didn't serve the room page"
+  if [ "$WORKLOAD" = realistic ]; then  # every (person, room) page of the workload
+    mkdir -p "$OUT/expected"
+    local n=0 cookie room person
+    while IFS=, read -r cookie room person; do
+      n=$((n + 1)); fetch "$cookie" "$room" > "$OUT/expected/$n.html" || die "Rust didn't serve room $room for person $person"
+      [ "$(curl -s -o /dev/null -w '%{http_code}' -H "cookie: $cookie" "http://127.0.0.1:$PORT/rooms/$room")" = 200 ] \
+        || die "Rust answered room $room for person $person with something other than its page (a redirect?)"
+    done < "$OUT/workload/checks.csv"
+    log "Rust: $n (person, room) pages of the workload"
+  fi
   stop_app
 }
 
@@ -250,7 +321,23 @@ warm() {
     fetch | cmp -s - "$OUT/expected.html" || die "$app's room page differs from the Rust port's (request $i)"
   done
   log "$app: 100 of 100 room pages identical to the Rust port's"
+  if [ "$WORKLOAD" = realistic ]; then
+    local n=0 cookie room person
+    while IFS=, read -r cookie room person; do
+      n=$((n + 1)); fetch "$cookie" "$room" | cmp -s - "$OUT/expected/$n.html" || die "$app's room $room for person $person differs from the Rust port's"
+    done < "$OUT/workload/checks.csv"
+    log "$app: all $n (person, room) pages identical to the Rust port's"
+  fi
   all_out "$OUT/warmup-$app" 16 "$WARMUP" > "$OUT/warmup-$app.out" 2>&1 || true
+}
+
+drive() {  # KIND RUN_DIR LOAD [RATE]: Hyperfoil's warmup phase (HF_WARMUP s) then SECS s, as a step runs them
+  local kind=$1 run=$2 load=$3 rate=${4:-$3}
+  case $kind in
+    closed) hyperfoil "$run" -PCONNS="$load" -PUSERS="$load" -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" -PPAGES="$OUT/workload/pages.csv" "$ROOT/bench/$SCENARIO.hf.yaml" ;;
+    open|tabs) hyperfoil "$run" -PCONNS="$RATE_CONNS" -PRATE="$rate" -PSESSIONS="$(awk -v r="$rate" 'BEGIN { s = int(r * 2) + 1; print (s < 100 ? 100 : s) }')" \
+            -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" -PPAGES="$OUT/workload/pages.csv" "$ROOT/bench/$SCENARIO-rate.hf.yaml" ;;
+  esac
 }
 
 # One measured step: a Hyperfoil warmup phase then the measured phase, under the same load.
@@ -259,14 +346,11 @@ warm() {
 # The app's CPU is measured over the whole Hyperfoil run and divided by the responses of both phases;
 # busy CPUs by the run's wall time. Returns 1 if the app is no longer running.
 step() {
-  local kind=$1 app=$2 rep=$3 load=$4 f run c0 c1 a0 a1 l0 l1 t0 t1 e0
-  f=$OUT/$kind/$app-$rep-$([ "$kind" = closed ] && echo c || echo r)$load run=$f-hyperfoil
+  local kind=$1 app=$2 rep=$3 load=$4 rate=${5:-$4} f run c0 c1 a0 a1 l0 l1 t0 t1 e0
+  f=$OUT/$kind/$app-$rep-$(case $kind in closed) echo c ;; open) echo r ;; tabs) echo t ;; esac)$load run=$f-hyperfoil
   e0=$(log_errors "$app"); nstat -n > /dev/null
   c0=$(app_cpu_secs); a0=$(cpus_busy "$APP_CPUS"); l0=$(cpus_busy "$DRIVER_CPUS"); t0=$(now)
-  case $kind in
-    closed) hyperfoil "$run" -PCONNS="$load" -PUSERS="$load" -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" "$ROOT/bench/room.hf.yaml" ;;
-    open) hyperfoil "$run" -PCONNS="$RATE_CONNS" -PRATE="$load" -PSESSIONS=$((load * 2)) -PDURATION="${SECS}s" -PWARMUP="${HF_WARMUP}s" "$ROOT/bench/room-rate.hf.yaml" ;;
-  esac > "$f.out" 2>&1 || true
+  drive "$kind" "$run" "$load" "$rate" > "$f.out" 2>&1 || true
   t1=$(now); a1=$(cpus_busy "$APP_CPUS"); l1=$(cpus_busy "$DRIVER_CPUS")
   if ! alive; then
     echo "failed=1" > "$f.properties"; log "$app exited during the step at $load ($OUT/$app.log)"; return 1
@@ -280,13 +364,41 @@ step() {
     awk -v a="$l0" -v b="$l1" -v s="$t0" -v e="$t1" 'BEGIN { print "loadgen_busy=" (b - a) / (e - s) }'
     echo "app_cpus=$(cpu_list "$APP_CPUS" | wc -l)"
     echo "loadgen_cpus=$(cpu_list "$DRIVER_CPUS" | wc -l)"
-    [ "$kind" = open ] && echo "sessions=$((load * 2))"
+    [ "$kind" = closed ] || awk -v r="$rate" 'BEGIN { s = int(r * 2) + 1; print "sessions=" (s < 100 ? 100 : s) }'
     echo "app_log_errors=$(( $(log_errors "$app") - e0 ))"
     app_mem; tcp_counters; } > "$f.properties"
   log "$app rep $rep: $kind $load"
 }
 
 # ---- run -------------------------------------------------------------------------------------
+# The realistic workload at RATE page loads/s (open model), the writer committing the presence updates
+# and messages that go with them (the visible tabs that load RATE pages/s: RATE x PAGE_EVERY) to the
+# app's database during the step.
+tab_writes() {  # RATE: the visible tabs that load RATE pages/s, their presence commits/s and messages/s
+  awk -v r="$1" -v p="$PAGE_EVERY" -v q="$PRESENCE_EVERY" -v m="$MESSAGE_EVERY" \
+    'BEGIN { t = int(r * p); printf "%d %.3f %.3f\n", t, t / q, t / m }'
+}
+tabs_step() {  # APP REP RATE
+  local app=$1 rep=$2 rate=$3 tabs presence messages f rc=0
+  read -r tabs presence messages <<< "$(tab_writes "$rate")"
+  f=$OUT/tabs/$app-$rep-t$rate
+  start_writer "$app" "$f.writer.txt" "$presence" "$messages"
+  step tabs "$app" "$rep" "$rate" "$rate" || rc=$?
+  stop_writer
+  # the writer's own report: "writer: P presence commits, M message commits, F failed, ..."
+  local wrote p m x
+  wrote=$(sed -n 's/^writer: \([0-9]*\) presence commits, \([0-9]*\) message commits, \([0-9]*\) failed.*/\1 \2 \3/p' "$f.writer.txt" 2> /dev/null)
+  if [ -f "$f.properties" ]; then
+    printf 'offered=%s\ntabs=%s\npresence_per_sec=%s\nmessages_per_sec=%s\n' "$rate" "$tabs" "$presence" "$messages" >> "$f.properties"
+    if [ -z "$wrote" ]; then
+      echo "writer_failed=1" >> "$f.properties"; log "$app at $rate pages/s: the writer reported nothing ($f.writer.err)"
+    else
+      read -r p m x <<< "$wrote"; printf 'presence_commits=%s\nmessage_commits=%s\nwriter_failures=%s\n' "$p" "$m" "$x" >> "$f.properties"
+    fi
+  fi
+  return $rc
+}
+
 cmd_run() {
   [ -x "$RUST/target/release/campfire" ] || die "run ./bench.sh setup first"
   local cores_list=$CORES cores
@@ -296,7 +408,8 @@ cmd_run() {
     OUT=$ROOT/results/runs/$(date +%Y%m%d-%H%M%S)-$(cpu_list "$APP_CPUS" | wc -l)c
     log "app CPUs $APP_CPUS, load driver CPUs $DRIVER_CPUS"
     preflight
-    mkdir -p "$OUT/closed" "$OUT/open"; log "results: $OUT"
+    mkdir -p "$OUT/closed" "$OUT/open" "$OUT/tabs"; log "results: $OUT"
+    prepare_workload
     describe > "$OUT/config.txt"
     reference
     local rep app load order
@@ -304,7 +417,9 @@ cmd_run() {
       order=$APPS; [ $((rep % 2)) = 0 ] && order=$(tr ' ' '\n' <<< "$APPS" | tac | tr '\n' ' ')
       for app in $order; do
         start_app "$app" "$APP_CPUS"; warm "$app"
-        if [ -n "$RATES" ]; then
+        if [ "$WORKLOAD" = realistic ]; then
+          for load in $RATES; do tabs_step "$app" "$rep" "$load" || break; done
+        elif [ -n "$RATES" ]; then
           for load in $RATES; do step open "$app" "$rep" "$load" || break; done
         else
           for load in $CONNS; do step closed "$app" "$rep" "$load" || break; done
@@ -321,9 +436,10 @@ describe() {
   local cpu0; cpu0=$(cpu_list "$APP_CPUS" | head -1)
   echo "matrix=$MATRIX apps=$APPS reps=$REPS secs=$SECS warmup=$WARMUP hf_warmup=$HF_WARMUP $([ -n "$RATES" ] && echo "rates=$RATES rate_conns=$RATE_CONNS" || echo "conns=$CONNS")"
   echo "app_cpus=$APP_CPUS loadgen_cpus=$DRIVER_CPUS"
+  [ "$WORKLOAD" = realistic ] && echo "workload=realistic rates=$RATES page_every=${PAGE_EVERY}s presence_every=${PRESENCE_EVERY}s message_every=${MESSAGE_EVERY}s sessions=$SESSIONS message_room=$MESSAGE_ROOM pages=$(wc -l < "$OUT/workload/pages.csv")"
   echo "cpu=$(lscpu | sed -n 's/^Model name: *//p') kernel=$(uname -r) governor=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_governor" 2> /dev/null) boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2> /dev/null) max_khz=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_max_freq" 2> /dev/null)"
   echo "jdk_kotlin=$JDK_KOTLIN jdk_quarkus=$JDK_QUARKUS jvm_common=${JVM_COMMON[*]} jvm_quarkus=${JVM_QUARKUS[*]}"
-  local d; for d in "$ROOT" "$RUST" "$KOTLIN"; do echo "$(basename "$d") $(git -C "$d" rev-parse --short HEAD) $(git -C "$d" status --short | wc -l) changed"; done
+  local d; for d in "$ROOT" "$RUST" "$KOTLIN" "$KOTLIN_POOLED"; do echo "$(basename "$d") $(git -C "$d" rev-parse --short HEAD) $(git -C "$d" status --short -- . ':!results/runs' | wc -l) changed"; done
 }
 
 # ---- profile ---------------------------------------------------------------------------------
@@ -333,26 +449,37 @@ cmd_profile() {
   case $FORMAT in html|jfr|collapsed) ;; *) die "--format html, jfr or collapsed" ;; esac
   [[ $EVENT != *,* ]] || [ "$FORMAT" = jfr ] || die "several events (--event $EVENT) need --format jfr"
   [ -n "$APP_CPUS" ] || place "${CORES%% *}"
-  local conns=${override[CONNS]:-1024}; conns=${conns%% *}
+  # The load of a run's step: realistic (its first rate, with the writer), --rate (the first, open
+  # model), else all out at the first --conns (default 1024).
+  local kind=closed load=${override[CONNS]:-1024} tag
+  if [ "$WORKLOAD" = realistic ]; then kind=tabs; load=$RATES
+  elif [ -n "$RATES" ]; then kind=open; load=$RATES; fi
+  load=${load%% *}; tag=$(case $kind in closed) echo c ;; open) echo r ;; tabs) echo t ;; esac)$load
   OUT=$ROOT/results/profiles; mkdir -p "$OUT"
+  prepare_workload
   # Debug information at every instruction, not only at safepoints: without it the JIT's inlined code
   # is attributed to the nearest frame that has some, and flame graphs mislead.
   JVM_COMMON+=(-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints)
   start_app "$PROFILE_APP" "$APP_CPUS"
-  all_out "$OUT/hyperfoil-warmup" "$conns" "$WARMUP" > /dev/null 2>&1 || true
-  all_out "$OUT/hyperfoil-load" "$conns" 20 > /dev/null 2>&1 &
+  all_out "$OUT/hyperfoil-warmup" 16 "$WARMUP" > /dev/null 2>&1 || true
+  if [ "$kind" = tabs ]; then
+    local tabs presence messages; read -r tabs presence messages <<< "$(tab_writes "$load")"
+    start_writer "$PROFILE_APP" "$OUT/$PROFILE_APP-writer.txt" "$presence" "$messages"
+  fi
+  SECS=20 drive "$kind" "$OUT/hyperfoil-load" "$load" > "$OUT/hyperfoil-load.out" 2>&1 &
   LOAD_PID=$!
-  trap 'kill "$LOAD_PID" 2> /dev/null || true; stop_app' EXIT
+  trap 'kill "$LOAD_PID" 2> /dev/null || true; stop_writer; stop_app' EXIT
   local f java
-  sleep 5  # Hyperfoil started and loading
-  f=$OUT/$PROFILE_APP-${EVENT//,/+}-$(cpu_list "$APP_CPUS" | wc -l)c-c$conns.$FORMAT
+  sleep $((HF_WARMUP + 3))  # past Hyperfoil's warmup phase: the profile sees the measured phase's load
+  f=$OUT/$PROFILE_APP-${EVENT//,/+}-$(cpu_list "$APP_CPUS" | wc -l)c-$tag.$FORMAT
   java=$(jdk "$JDK_QUARKUS")
   # shellcheck disable=SC2086  # AP_OPTS: words on purpose
   # 10 s, one sample per ms of CPU (cpu, wall): N samples = N ms, samples / 10,000 = cores busy on average.
   local interval=(); case $EVENT in cpu|wall) interval=(-i 1ms) ;; esac
   (cd "$ROOT" && JAVA_HOME=$java jbang --quiet ap-loader profiler -e "$EVENT" -d 10 "${interval[@]}" ${AP_OPTS:-} -f "$f" "$APP_PID")
   wait "$LOAD_PID" || true
-  stop_app
+  stop_writer; stop_app
+  [ "$kind" != tabs ] || log "$(head -1 "$OUT/$PROFILE_APP-writer.txt" 2> /dev/null)"
   log "profile: $f"
 }
 
@@ -446,6 +573,11 @@ while [ $# -gt 0 ]; do
     --secs) override[SECS]=$2; shift ;;
     --rate) [[ ${2:-} =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "--rate needs the rates, e.g. --rate 20000,40000"
       RATES=${2//,/ }; shift ;;
+    --sessions) override[SESSIONS]=$2; shift ;;
+    --page-every) override[PAGE_EVERY]=$2; shift ;;
+    --presence-every) override[PRESENCE_EVERY]=$2; shift ;;
+    --message-every) override[MESSAGE_EVERY]=$2; shift ;;
+    --message-room) override[MESSAGE_ROOM]=$2; shift ;;
     --force) FORCE=1 ;;
     --event) EVENT=$2; shift ;;
     --format) FORMAT=$2; shift ;;
@@ -456,8 +588,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -f "$ROOT/bench/matrix/$MATRIX.conf" ] || die "no matrix bench/matrix/$MATRIX.conf"
+WORKLOAD=room CONNS="" SESSIONS=0 PAGE_EVERY=60 PRESENCE_EVERY=50 MESSAGE_EVERY=600 MESSAGE_ROOM=all  # a matrix may set them (realistic)
+RATES_GIVEN=$RATES
 source "$ROOT/bench/matrix/$MATRIX.conf"
+[ -z "$RATES_GIVEN" ] || RATES=$RATES_GIVEN  # --rate wins over a matrix's rates
+[ "$WORKLOAD" != realistic ] || [ -n "$RATES" ] || die "--matrix realistic needs page loads/s: --rate R,R... (or RATES in the matrix)"
 for k in "${!override[@]}"; do printf -v "$k" '%s' "${override[$k]}"; done
+SCENARIO=$WORKLOAD  # bench/room*.hf.yaml or bench/realistic*.hf.yaml
 { [ -n "$APP_CPUS" ] && [ -n "$DRIVER_CPUS" ]; } || { [ -z "$APP_CPUS" ] && [ -z "$DRIVER_CPUS" ]; } || die "--app-cpus and --driver-cpus go together"
 [ -z "$APP_CPUS" ] || [ -z "${override[CORES]:-}" ] || die "--cores picks the CPUs; with --app-cpus and --driver-cpus, leave it out"
 

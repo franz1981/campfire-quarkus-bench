@@ -1,0 +1,34 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='474' height='420' font-family='sans-serif' font-size='12'>
+<rect width='474' height='420' fill='white'/>
+<text x='70' y='22' font-size='15' font-weight='bold'>Throughput, all out (req/s, higher is better)</text>
+<rect x='70' y='32' width='12' height='12' fill='#4695EB'/><text x='86' y='43'>quarkus</text>
+<line x1='70' y1='360' x2='454' y2='360' stroke='#ddd'/>
+<text x='64' y='364' text-anchor='end' fill='#555'>0</text>
+<line x1='70' y1='285' x2='454' y2='285' stroke='#ddd'/>
+<text x='64' y='289' text-anchor='end' fill='#555'>50,000</text>
+<line x1='70' y1='210' x2='454' y2='210' stroke='#ddd'/>
+<text x='64' y='214' text-anchor='end' fill='#555'>100,000</text>
+<line x1='70' y1='135' x2='454' y2='135' stroke='#ddd'/>
+<text x='64' y='139' text-anchor='end' fill='#555'>150,000</text>
+<line x1='70' y1='60' x2='454' y2='60' stroke='#ddd'/>
+<text x='64' y='64' text-anchor='end' fill='#555'>200,000</text>
+<rect x='85' y='335' width='30' height='25' fill='#4695EB'><title>quarkus: 16,707</title></rect>
+<text x='100' y='332' text-anchor='middle' font-size='9' fill='#333'>17k</text>
+<text x='100' y='378' text-anchor='middle'>1</text>
+<rect x='149' y='199' width='30' height='161' fill='#4695EB'><title>quarkus: 107,634</title></rect>
+<text x='164' y='196' text-anchor='middle' font-size='9' fill='#333'>108k</text>
+<text x='164' y='378' text-anchor='middle'>16</text>
+<rect x='213' y='173' width='30' height='187' fill='#4695EB'><title>quarkus: 124,965</title></rect>
+<text x='228' y='170' text-anchor='middle' font-size='9' fill='#333'>125k</text>
+<text x='228' y='378' text-anchor='middle'>64</text>
+<rect x='277' y='172' width='30' height='188' fill='#4695EB'><title>quarkus: 125,008</title></rect>
+<text x='292' y='169' text-anchor='middle' font-size='9' fill='#333'>125k</text>
+<text x='292' y='378' text-anchor='middle'>256</text>
+<rect x='341' y='159' width='30' height='201' fill='#4695EB'><title>quarkus: 133,957</title></rect>
+<text x='356' y='156' text-anchor='middle' font-size='9' fill='#333'>134k</text>
+<text x='356' y='378' text-anchor='middle'>1,024</text>
+<rect x='405' y='176' width='30' height='184' fill='#4695EB'><title>quarkus: 122,471</title></rect>
+<text x='420' y='173' text-anchor='middle' font-size='9' fill='#333'>122k</text>
+<text x='420' y='378' text-anchor='middle'>4,096</text>
+<text x='262' y='408' text-anchor='middle' fill='#555'>connections</text>
+</svg>

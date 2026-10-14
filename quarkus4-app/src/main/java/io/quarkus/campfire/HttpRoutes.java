@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.Map;
+import java.util.concurrent.RejectedExecutionException;
 
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
@@ -47,7 +48,8 @@ import campfire.ruby.RubyIntegerKt;
  * that server writes it: the handler's headers in order, then {@code Date}, a zero
  * {@code Content-Length} last, chunked when the body is marked {@link ChunkedBody}.
  *
- * <p>SQLite runs only on the {@link SqliteStage}; everything else runs on the event loops.
+ * <p>SQLite runs only on the {@link SqliteStage}; cache hits run on the event loops, and the requests
+ * that need more (misses, other routes) on the {@link RequestPool}, their SQL forwarded to the stage.
  */
 @Singleton
 public class HttpRoutes {
@@ -59,6 +61,9 @@ public class HttpRoutes {
     @Inject
     SqliteStage stage;
 
+    @Inject
+    RequestPool pool;
+
     void routes(@Observes Router router) {
         router.route().handler(rc -> withBody(rc.request(), this::staged));
     }
@@ -67,7 +72,8 @@ public class HttpRoutes {
      * The room page's reads on the {@link SqliteStage}, everything else on the event loop: a signed-in
      * {@code GET /rooms/:id} gets its session, user and membership (and the generations around them)
      * from the stage, then runs on the event loop. A request that needs any other SQLite access (a
-     * miss, the hourly session refresh), or that isn't such a GET, runs on the stage from a fresh copy.
+     * miss, the hourly session refresh), or that isn't such a GET, runs on the {@link RequestPool}
+     * from a fresh copy, its SQL forwarded to the stage.
      */
     private void staged(HttpServerRequest http, byte[] body) {
         Context loop = Vertx.currentContext();
@@ -76,12 +82,12 @@ public class HttpRoutes {
         String token = sessionCookie == null ? null : app.signedCookies.verify("session_token", sessionCookie, app.kit.getJavaClock().instant());
         long roomId = token == null ? -1 : roomId(request.getPath());
         if (roomId < 0) {
-            onStage(loop, http, request);
+            onPool(loop, http, request);
             return;
         }
         stage.lookup(token, sessionCookie, roomId, loop, prefetched -> {
             if (prefetched.failed) {
-                onStage(loop, http, request);
+                onPool(loop, http, request);
                 return;
             }
             Staged.set(prefetched);
@@ -91,16 +97,40 @@ public class HttpRoutes {
             } finally {
                 Staged.clear();
             }
-            if (prefetched.needsStage) onStage(loop, http, toRequest(http, body));
+            if (prefetched.needsStage) onPool(loop, http, toRequest(http, body));
             else respond(http, response);
         });
     }
 
-    private void onStage(Context loop, HttpServerRequest http, Request request) {
-        stage.run(() -> {
-            Response response = handle(request);
-            loop.runOnContext(ignored -> respond(http, response));
-        });
+    /**
+     * {@code request} in full on the {@link RequestPool}, from scratch: its generation and reads are
+     * observed afresh there (reusing the event loop's batch would serve it at a generation that, under
+     * frequent commits, is already gone, and nothing it renders could be kept).
+     */
+    private void onPool(Context loop, HttpServerRequest http, Request request) {
+        try {
+            pool.execute(() -> {
+                Response response = handle(request);
+                loop.runOnContext(ignored -> respond(http, response));
+            });
+        } catch (RejectedExecutionException e) {
+            overloaded(http);
+        }
+    }
+
+    /** Requests refused because the request pool's queue was full, and when that was last logged. */
+    private static final java.util.concurrent.atomic.LongAdder REFUSED = new java.util.concurrent.atomic.LongAdder();
+    private static volatile long lastRefusalLog;
+
+    /** The request pool's queue is full: 503, try again in a second (on the request's event loop); logged at most once a second. */
+    private static void overloaded(HttpServerRequest http) {
+        REFUSED.increment();
+        long now = System.nanoTime();
+        if (now - lastRefusalLog > 1_000_000_000L) {
+            lastRefusalLog = now;
+            LOG.warnf("request pool full: 503 (%d refused so far)", REFUSED.sum());
+        }
+        http.response().setStatusCode(503).putHeader("retry-after", "1").putHeader("content-length", "0").end();
     }
 
     /** Writes {@code response}; if that fails, the connection still gets an answer (or is closed). */

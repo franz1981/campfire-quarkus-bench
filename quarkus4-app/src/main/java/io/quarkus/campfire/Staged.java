@@ -4,12 +4,11 @@ import campfire.kit.Body;
 import campfire.kit.ErrorsKt;
 import campfire.kit.Headers;
 import campfire.kit.Response;
-import io.vertx.core.Context;
 
 /**
  * The prefetched reads of the request running on this thread (an event loop), and the guard that
  * keeps SQLite off event loops: a request that needs anything else from SQLite is marked and halted,
- * and runs again on the {@link SqliteStage}.
+ * and runs again on the {@link RequestPool}.
  */
 final class Staged {
     private static final ThreadLocal<SqliteStage.Prefetched> CURRENT = new ThreadLocal<>();
@@ -41,10 +40,5 @@ final class Staged {
         prefetched().needsStage = true;
         ErrorsKt.halt(new Response(503, new Headers(), Body.Empty.INSTANCE));
         throw new IllegalStateException("halt returned");
-    }
-
-    /** Called before writing or observing SQLite directly: on an event loop, the request goes to the stage instead. */
-    static void requireBlockingAllowed() {
-        if (Context.isOnEventLoopThread()) needStage();
     }
 }

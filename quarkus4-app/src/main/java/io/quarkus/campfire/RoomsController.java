@@ -86,6 +86,17 @@ final class RoomsController {
         User user = Concerns.currentUser(c);
         Instant now = c.now();
         String host = c.getRequest().host();
+        String lastRoomCookie = c.getCookies().get("last_room");
+        Long lastRoom = lastRoomCookie != null ? RubyIntegerKt.integerCast(lastRoomCookie) : null;
+        Runnable prefetched = app.db.prefetchRoomPage(room, user.getId(), lastRoom, key -> fragments.get(messageKey(key), Fragment.class));
+        try {
+            return renderShow(c, app, room, fragments, user, now, host);
+        } finally {
+            prefetched.run();
+        }
+    }
+
+    private static Response renderShow(Ctx c, CampfireApp app, Room room, FragmentCache fragments, User user, Instant now, String host) {
         ShowView show = app.db.read(r -> {
             List<PageMessage<Fragment>> messages = r.lastPage(room.getId(), key -> fragments.get(messageKey(key), Fragment.class));
             Presenter presenter = new Presenter(r, app, fragments, now, host);

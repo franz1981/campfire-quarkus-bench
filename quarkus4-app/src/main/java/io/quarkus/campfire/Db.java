@@ -28,7 +28,8 @@ import campfire.db.User;
 /**
  * The room page's SQL through SQLite's C API ({@link Sqlite}, FFM): one reader connection
  * ({@code query_only}) and one writer connection, both opened and used only by the
- * {@link SqliteStage} thread, plus the response cache's {@code data_version} observer. The statements
+ * {@link SqliteStage} thread, plus the response cache's {@code data_version} observer (read once at
+ * startup, then only there too). Other threads get their reads and writes done there. The statements
  * are the ones {@code crates/db} sends, prepared once and kept, as rusqlite's {@code prepare_cached}
  * and the Kotlin port's readers do; connections get the settings Rails applies.
  */
@@ -55,6 +56,14 @@ public class Db {
     static final String BOOSTS_FOR_MESSAGE = "SELECT \"boosts\".\"id\", \"boosts\".\"message_id\", \"boosts\".\"booster_id\", \"boosts\".\"content\", \"boosts\".\"created_at\", \"boosts\".\"updated_at\" FROM \"boosts\" WHERE \"boosts\".\"message_id\" = ? ORDER BY \"boosts\".\"created_at\" ASC";
     static final String BANNED_IP = "SELECT 1 AS one FROM \"bans\" WHERE \"bans\".\"ip_address\" = ? LIMIT 1";
     static final String BOT_BY_KEY = "SELECT " + USER_COLUMNS + " FROM \"users\" WHERE \"users\".\"status\" = 0 AND \"users\".\"role\" = 2 AND \"users\".\"id\" = ? AND \"users\".\"bot_token\" = ? LIMIT 1";
+    /**
+     * The indexes the Rust port adds to the Rails schema, created at boot when missing
+     * ({@code crates/db/src/schema.rs} {@code ADDITIONS}, run by {@code schema::prepare}): without the
+     * first, every room page sorts the room's whole history.
+     */
+    static final List<String> SCHEMA_ADDITIONS = List.of(
+            "CREATE INDEX IF NOT EXISTS \"index_messages_on_room_id_and_created_at\" ON \"messages\" (\"room_id\", \"created_at\")",
+            "CREATE INDEX IF NOT EXISTS \"index_messages_on_room_id_and_updated_at\" ON \"messages\" (\"room_id\", \"updated_at\")");
     static final String TOUCH_SESSION = "UPDATE \"sessions\" SET \"ip_address\" = ?, \"last_active_at\" = ?, \"updated_at\" = ?, \"user_agent\" = ? WHERE \"sessions\".\"id\" = ?";
 
     @ConfigProperty(name = "campfire.database-path")
@@ -65,6 +74,13 @@ public class Db {
     String library;
 
     private Sqlite sqlite;
+    /** The thread that owns the connections, and the stage that runs work there for other threads. */
+    private volatile Thread owner;
+    private SqliteStage stage;
+    /** The reads of any other thread: each one forwarded to the stage. */
+    private Reads forwarding;
+    /** On a request pool thread, the room page being rendered: its reads, read at once ({@link #prefetchRoomPage}). */
+    private static final ThreadLocal<RoomPageReads> PAGE = new ThreadLocal<>();
     /** The stage's connections, opened on first use there and kept (only that thread uses them). */
     private Reader reader;
     private Sqlite.Connection writer;
@@ -73,29 +89,62 @@ public class Db {
     @PostConstruct
     void init() {
         sqlite = new Sqlite(Path.of(library));
+        // the Rust port's schema additions, at boot, before any request (its schema::prepare)
+        Sqlite.Connection connection = sqlite.open(path, false);
+        try {
+            configure(connection, false);
+            for (String addition : SCHEMA_ADDITIONS) connection.execute(addition);
+        } finally {
+            connection.close();
+        }
+    }
+
+    /** Called by the stage before it starts: from then on only {@code owner} touches the connections. */
+    void attach(SqliteStage stage, Thread owner) {
+        this.stage = stage;
+        this.forwarding = new ForwardingReads(stage);
+        this.owner = owner;
+    }
+
+    /** Throws unless called by the owner thread (or before there is one, at startup). */
+    private void assertOwner() {
+        Thread o = owner;
+        if (o != null && o != Thread.currentThread()) throw new IllegalStateException("SQLite connection used off the SQLite stage by " + Thread.currentThread().getName());
     }
 
     /**
      * Runs {@code work} with the reads (the Kotlin port's {@code db.read}): on an event loop, the
-     * request's prefetched reads ({@link PrefetchedReads}); on the SQLite stage, its connection.
+     * request's prefetched reads ({@link PrefetchedReads}); on the SQLite stage, its connection; on any
+     * other thread, the request's prefetched reads if it has some, each other read forwarded to the
+     * stage (the thread waits for it). {@code work} itself runs here: only SQL runs on the stage.
      */
     public <T> T read(Function<Reads, T> work) {
-        if (io.vertx.core.Context.isOnEventLoopThread()) return work.apply(new PrefetchedReads(Staged.prefetched()));
-        return work.apply(reader());
+        if (io.vertx.core.Context.isOnEventLoopThread()) return work.apply(new PrefetchedReads(Staged.prefetched(), null));
+        Thread o = owner;
+        if (o == null || o == Thread.currentThread()) return work.apply(reader());
+        RoomPageReads page = PAGE.get();
+        Reads others = page != null ? page : forwarding;
+        SqliteStage.Prefetched p = Staged.current();
+        return work.apply(p != null ? new PrefetchedReads(p, others) : others);
     }
 
-    /** Runs {@code work} in one read transaction on the stage's connection (one snapshot). */
-    void inReadTransaction(Consumer<Reads> work) {
-        Reader reader = reader();
-        reader.run(reader.begin);
-        try {
-            work.accept(reader);
-        } finally {
-            reader.run(reader.commit);
-        }
+    /**
+     * On a thread that forwards its reads: the room page's reads in one forwarded read
+     * ({@link RoomPageReads#load}), answering this thread's reads until the returned action runs.
+     * On an event loop or the stage, nothing (their reads are prefetched, or direct).
+     */
+    Runnable prefetchRoomPage(Room room, long userId, Long lastRoom, Function<MessageKey, ?> fragment) {
+        Thread o = owner;
+        if (io.vertx.core.Context.isOnEventLoopThread() || o == null || o == Thread.currentThread()) return () -> {
+        };
+        RoomPageReads page = stage.read(r -> RoomPageReads.load(r, room, userId, lastRoom, fragment)).with(forwarding);
+        PAGE.set(page);
+        return PAGE::remove;
     }
 
-    private Reader reader() {
+    /** The stage's reader connection, opened on first use. */
+    Reader reader() {
+        assertOwner();
         if (reader == null) {
             Sqlite.Connection connection = sqlite.open(path, false);
             configure(connection, true);
@@ -128,6 +177,7 @@ public class Db {
         connection.execute("PRAGMA busy_timeout = 50");
         Sqlite.Statement pragma = connection.prepare("PRAGMA data_version");
         return () -> {
+            assertOwner();
             try {
                 if (!pragma.step()) throw new IllegalStateException("PRAGMA data_version returned no row");
                 return pragma.integer(1);
@@ -145,9 +195,18 @@ public class Db {
         writer = null;
     }
 
-    /** {@code Session#refresh_activity}'s update ({@code touchSession}), autocommit, on the writer connection. */
+    /**
+     * {@code Session#refresh_activity}'s update ({@code touchSession}) on the writer connection, on the
+     * stage: an event loop's request goes there instead ({@link Staged#needStage}); another thread
+     * waits for it.
+     */
     public void touchSession(long sessionId, String ipAddress, String userAgent, String now) {
-        Staged.requireBlockingAllowed();
+        if (io.vertx.core.Context.isOnEventLoopThread()) Staged.needStage();
+        Thread o = owner;
+        if (o != null && o != Thread.currentThread()) {
+            stage.write(() -> touchSession(sessionId, ipAddress, userAgent, now));
+            return;
+        }
         if (writer == null) {
             writer = sqlite.open(path, false);
             configure(writer, false);
@@ -180,13 +239,27 @@ public class Db {
         private final Sqlite.Connection connection;
         private final Map<String, Sqlite.Statement> prepared = new HashMap<>();
         /** The batch's read transaction, prepared once (no per-batch {@code sqlite3_exec} and its allocations). */
-        final Sqlite.Statement begin;
-        final Sqlite.Statement commit;
+        private final Sqlite.Statement begin;
+        private final Sqlite.Statement commit;
 
         Reader(Sqlite.Connection connection) {
             this.connection = connection;
             begin = connection.prepare("BEGIN");
             commit = connection.prepare("COMMIT");
+        }
+
+        /** Starts a read transaction (deferred: its snapshot is taken by the first read). */
+        void begin() {
+            run(begin);
+        }
+
+        void commit() {
+            run(commit);
+        }
+
+        /** Ends whatever transaction is open; throws when none is. */
+        void rollback() {
+            connection.execute("ROLLBACK");
         }
 
         /** Runs a statement that returns no rows. */

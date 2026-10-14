@@ -31,13 +31,16 @@ public class Report {
         Set<String> flags = Set.of(Arrays.copyOfRange(args, 1, args.length));
         List<Step> all = new ArrayList<>(load(dir.resolve("closed"), "closed", "-c"));
         all.addAll(load(dir.resolve("open"), "open", "-r"));
+        all.addAll(load(dir.resolve("tabs"), "tabs", "-t"));
         List<Step> closed = all.stream().filter(s -> s.kind().equals("closed") && !s.failed()).toList();
         List<Step> open = all.stream().filter(s -> s.kind().equals("open") && !s.failed()).toList();
+        List<Step> tabs = all.stream().filter(s -> s.kind().equals("tabs") && !s.failed()).toList();
         if (flags.contains("--charts")) { charts(closed, dir.resolve("charts")); return; }
         boolean md = flags.contains("--markdown");
         if (Files.exists(dir.resolve("config.txt")) && !md) System.out.println(Files.readString(dir.resolve("config.txt")));
         if (!closed.isEmpty()) closedTables(closed, md);
         if (!open.isEmpty()) openTables(open, md);
+        if (!tabs.isEmpty()) tabsTables(tabs, md);
         problems(all);
     }
 
@@ -142,6 +145,27 @@ public class Report {
         table(head, rows, md);
     }
 
+    /** The realistic workload: per visible-tab count, the page loads offered and served, and their cost. */
+    static void tabsTables(List<Step> steps, boolean md) {
+        List<String> apps = apps(steps);
+        System.out.println(md ? "\n### Realistic workload, by page loads/s (medians)\n" : "\nRealistic workload, by page loads/s: medians over reps");
+        List<String> head = new ArrayList<>(List.of("pages/s offered", "visible tabs"));
+        for (String k : List.of("served pages/s", "µs CPU/page", "p50 ms", "p99 ms", "p99.9 ms", "RSS MB"))
+            head.add(k + " " + String.join(" / ", apps));
+        List<List<String>> rows = new ArrayList<>();
+        for (int tabs : loads(steps)) {  // a step's load is its page loads/s
+            rows.add(List.of(String.format(Locale.ROOT, "%,d", tabs),
+                    String.format(Locale.ROOT, "%,.0f", median(steps, apps.getFirst(), tabs, s -> s.get("tabs"))),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("served")), "%,.1f"),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("cpu_secs") * 1e6 / s.get("responses")), "%.1f"),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("p50_ms")), "%.2f"),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("p99_ms")), "%.1f"),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("p999_ms")), "%.1f"),
+                    join(apps, a -> median(steps, a, tabs, s -> s.get("rss_mb")), "%.0f")));
+        }
+        table(head, rows, md);
+    }
+
     /** Errors on either side, connections that never opened, a saturated load driver. */
     static void problems(List<Step> steps) {
         List<String> out = new ArrayList<>();
@@ -152,6 +176,8 @@ public class Report {
             if (s.get("errors") > 0) out.add(at + ": " + (long) s.get("errors") + " client errors");
             if (s.get("app_log_errors") > 0) out.add(at + ": " + (long) s.get("app_log_errors") + " error lines in the app log");
             if (s.kind().equals("closed") && s.get("opens") < s.load()) out.add(at + ": only " + (long) s.get("opens") + " connections opened");
+            if (s.get("writer_failed") > 0) out.add(at + ": the workload's writer reported nothing (no writes, or it failed)");
+            if (s.get("writer_failures") > 0) out.add(at + ": " + (long) s.get("writer_failures") + " writer commits failed");
             if (s.get("listen_overflows") > 0) out.add(at + ": " + (long) s.get("listen_overflows") + " listen-queue overflows");
             // Only the measured phase is read: waiting during the warmup (while connections open) doesn't count.
             if (s.get("blocked_ms") > 0) out.add(at + ": requests waited " + fmt(s.get("blocked_ms"), "%,.0f") + " ms in total for a free connection in the measured phase ("

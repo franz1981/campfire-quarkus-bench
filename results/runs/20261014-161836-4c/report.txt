@@ -1,0 +1,21 @@
+matrix=realistic apps=rust kotlin quarkus reps=1 secs=20 warmup=20 hf_warmup=5 rates=333 833 1667 rate_conns=2048
+app_cpus=1,2,3,4 loadgen_cpus=8,9,10,11,12,13,14,15
+workload=realistic rates=333 833 1667 page_every=60s presence_every=50s message_every=600s sessions=1000 message_room=all pages=4800
+cpu=AMD Ryzen 9 7950X 16-Core Processor kernel=7.1.13-100.fc43.x86_64 governor=performance boost=0 max_khz=4300000
+jdk_kotlin=25.0.3-tem jdk_quarkus=27.0.0-tem jvm_common=-XX:+UseParallelGC -XX:+UseCompactObjectHeaders -Xmx512m --enable-native-access=ALL-UNNAMED jvm_quarkus=-XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -XX:+ExitOnOutOfMemoryError -XX:TrimNativeHeapInterval=5000 -Dvertx.disableHttpHeadersValidation=true -Dio.netty.leakDetection.level=disabled -Dio.netty.allocator.lowMemory=false -Dio.netty.buffer.checkBounds=false -Dio.netty.buffer.checkAccessible=false -Dio.netty.tryReflectionSetAccessible=true --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow
+campfire-quarkus-bench 9390b49 2 changed
+once-campfire-rust 6dae2fd 0 changed
+once-campfire-kotlin 87436f3 0 changed
+once-campfire-kotlin-pooled 6cc0ae8 0 changed
+
+
+Realistic workload, by page loads/s: medians over reps
+pages/s offered  visible tabs  served pages/s kotlin / quarkus / rust  µs CPU/page kotlin / quarkus / rust  p50 ms kotlin / quarkus / rust  p99 ms kotlin / quarkus / rust  p99.9 ms kotlin / quarkus / rust  RSS MB kotlin / quarkus / rust
+            333        19,980                   332.9 / 332.9 / 332.9             4628.1 / 4572.3 / 2932.5              4.55 / 4.29 / 3.31               17.2 / 32.2 / 4.0                 29.1 / 50.3 / 9.0                 688 / 496 / 266
+            833        49,980                   741.9 / 832.1 / 832.7             4877.8 / 4311.4 / 3342.1          1182.79 / 18.87 / 3.44             2315.3 / 58.7 / 7.9              2365.6 / 69.7 / 10.9                 695 / 663 / 293
+          1,667       100,020               668.3 / 1,623.3 / 1,079.0             5411.0 / 2416.4 / 3341.0      4898.95 / 918.55 / 2919.24        5234.5 / 1627.4 / 3808.4          5268.0 / 1862.3 / 4026.5                 704 / 615 / 397
+
+Problems:
+  kotlin rep 1 tabs 1667: requests waited 23,464,479 ms in total for a free connection in the measured phase (25.20% of the response time)
+  quarkus rep 1 tabs 1667: requests waited 365,696 ms in total for a free connection in the measured phase (1.18% of the response time)
+  rust rep 1 tabs 1667: requests waited 20,549,992 ms in total for a free connection in the measured phase (24.92% of the response time)

@@ -1,0 +1,49 @@
+# The realistic workload all out (closed loop): as room.hf.yaml, but each request is one of the pages
+# of the run's sessions (PAGES, written by bench/Workload.java prepare), picked at random.
+name: campfire-realistic
+threads: !param THREADS 4
+http:
+  host: !concat [ "http://127.0.0.1:", !param PORT 4390 ]
+  allowHttp2: false
+  useHttpCache: false
+  sharedConnections: !param CONNS 1024
+ergonomics:
+  userAgentFromSession: false
+  repeatCookies: false
+phases:
+- warmup:
+    always:
+      users: !param USERS 1024
+      duration: !param WARMUP 5s
+      scenario: &scenario
+        maxRequests: 1
+        maxSequences: 1
+        orderedSequences:
+        - fetch:
+          # a page of the realistic workload: a session and one of its person's rooms, at random
+          # (bench/Workload.java prepare: "cookie header,room id,person id" per line)
+          - randomCsvRow:
+              file: !param PAGES
+              columns:
+                0: cookie
+                1: room
+          - httpRequest:
+              GET:
+                pattern: /rooms/${room}
+              # Hyperfoil's default SLA fails a phase if any request waits for a free connection, which
+              # also cancels the measured phase after a warmup; bench.sh reports that wait instead.
+              sla:
+              - blockedRatio: 1000
+              headers:
+                accept: "*/*"
+                user-agent: curl/8.7.1
+                cookie:
+                  fromVar: cookie
+                accept-encoding: gzip
+- main:
+    always:
+      startAfterStrict: warmup
+      users: !param USERS 1024
+      duration: !param DURATION 15s
+      maxDuration: !param MAX_DURATION 60s
+      scenario: *scenario

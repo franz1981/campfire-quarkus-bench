@@ -15,6 +15,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -108,6 +109,9 @@ public final class ResponseCache {
         private long dataVersion;
         private long generation;
         final boolean enabled;
+        /** The SQLite stage's thread, the only one that observes; other threads ask it ({@code forward}). */
+        private volatile Thread owner;
+        private Supplier<Long> forward;
 
         Store(DataVersion observer, long capacity) {
             this.observer = observer;
@@ -120,13 +124,26 @@ public final class ResponseCache {
             dataVersion = observer.read();
         }
 
+        /** The generation as last observed (the SQLite stage's thread only: its statistics). */
+        long observedGeneration() {
+            return generation;
+        }
+
+        void attach(Thread owner, Supplier<Long> forward) {
+            this.forward = forward;
+            this.owner = owner;
+        }
+
         /**
          * The current database generation, or null when SQLite can't say (both caches are then
-         * bypassed). Only the SQLite stage thread observes it; event loops use the generations it
-         * read for their request ({@link SqliteStage.Prefetched}).
+         * bypassed). Only the SQLite stage thread observes it: event loops use the generations it
+         * read for their request ({@link SqliteStage.Prefetched}) or send the request on; other
+         * threads ask the stage and wait.
          */
         Long version() {
-            Staged.requireBlockingAllowed();
+            if (io.vertx.core.Context.isOnEventLoopThread()) Staged.needStage();
+            Thread o = owner;
+            if (o != null && o != Thread.currentThread()) return forward.get();
             try {
                 long current = observer.read();
                 if (current != dataVersion) {
@@ -348,7 +365,10 @@ public final class ResponseCache {
     }
 
     static Key requestKey(long generation, String endpoint, long user, long session, String target, String origin, Headers headers) {
-        KeyWriter key = KeyWriter.CURRENT.get().begin();
+        return KeyWriter.PER_THREAD.use(writer -> requestKey(writer.begin(), generation, endpoint, user, session, target, origin, headers));
+    }
+
+    private static Key requestKey(KeyWriter key, long generation, String endpoint, long user, long session, String target, String origin, Headers headers) {
         key.number(generation);
         key.utf8(endpoint);
         key.number(user);
@@ -374,10 +394,11 @@ public final class ResponseCache {
 
     /**
      * Length-prefixed (little-endian u64) fields into a SHA-256, as {@code String.getBytes} would
-     * feed them, without allocating per request: one writer per thread, its digest and scratch reused.
+     * feed them, without allocating per request: one writer per event loop (pooled on virtual threads), its digest and scratch reused.
      */
     private static final class KeyWriter {
-        static final ThreadLocal<KeyWriter> CURRENT = ThreadLocal.withInitial(KeyWriter::new);
+        /** One per event loop; on a virtual thread one borrowed for the request key and given back (the Kotlin port's fork, PerThread). */
+        static final campfire.rails.PerThread<KeyWriter> PER_THREAD = new campfire.rails.PerThread<>(KeyWriter::new);
         private static final VarHandle LONG = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
 
         private final MessageDigest digest;

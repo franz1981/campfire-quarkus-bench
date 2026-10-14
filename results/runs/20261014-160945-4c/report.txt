@@ -1,0 +1,27 @@
+matrix=article apps=quarkus reps=3 secs=15 warmup=20 hf_warmup=5 conns=1 16 64 256 1024 4096
+app_cpus=1,2,3,4 loadgen_cpus=8,9,10,11,12,13,14,15
+cpu=AMD Ryzen 9 7950X 16-Core Processor kernel=7.1.13-100.fc43.x86_64 governor=performance boost=0 max_khz=4300000
+jdk_kotlin=25.0.3-tem jdk_quarkus=27.0.0-tem jvm_common=-XX:+UseParallelGC -XX:+UseCompactObjectHeaders -Xmx512m --enable-native-access=ALL-UNNAMED jvm_quarkus=-XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -XX:+ExitOnOutOfMemoryError -XX:TrimNativeHeapInterval=5000 -Dvertx.disableHttpHeadersValidation=true -Dio.netty.leakDetection.level=disabled -Dio.netty.allocator.lowMemory=false -Dio.netty.buffer.checkBounds=false -Dio.netty.buffer.checkAccessible=false -Dio.netty.tryReflectionSetAccessible=true --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --sun-misc-unsafe-memory-access=allow
+campfire-quarkus-bench 9390b49 1 changed
+once-campfire-rust 6dae2fd 0 changed
+once-campfire-kotlin 87436f3 0 changed
+once-campfire-kotlin-pooled 6cc0ae8 0 changed
+
+Closed loop: medians over reps
+conns  quarkus req/s  µs CPU/req quarkus  p99 ms quarkus  RSS MB quarkus  peak RSS MB quarkus
+    1         16,707                44.5             0.1             251                  354
+   16        107,634                28.2             0.8             315                  354
+   64        124,965                24.4             2.5             317                  354
+  256        125,008                24.1             5.3             321                  354
+ 1024        133,957                24.2            13.8             368                  374
+ 4096        122,471                27.5            57.1             420                  640
+
+     1  quarkus ██████ 16,707 req/s
+    16  quarkus ████████████████████████████████████████ 107,634 req/s
+    64  quarkus ███████████████████████████████████████████████ 124,965 req/s
+   256  quarkus ███████████████████████████████████████████████ 125,008 req/s
+  1024  quarkus ██████████████████████████████████████████████████ 133,957 req/s
+  4096  quarkus ██████████████████████████████████████████████ 122,471 req/s
+
+Problems:
+  quarkus rep 2 closed 4096: 319 listen-queue overflows

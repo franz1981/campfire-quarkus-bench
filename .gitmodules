@@ -4,3 +4,7 @@
 [submodule "upstream/once-campfire-kotlin"]
 	path = upstream/once-campfire-kotlin
 	url = https://github.com/mysticcoders/once-campfire-kotlin.git
+[submodule "upstream/once-campfire-kotlin-pooled"]
+	path = upstream/once-campfire-kotlin-pooled
+	url = https://github.com/franz1981/once-campfire-kotlin.git
+	branch = pooled-per-thread

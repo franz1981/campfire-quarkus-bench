@@ -26,20 +26,38 @@ The rules:
 2. **Tests stay green and unmodified.** The tests in `quarkus4-app/src/test` check the cookie
    handling, request keys and routes; add tests, don't weaken them.
 3. **Reuse is fine where it guarantees correctness.** The app uses the Kotlin port's Rails-format
-   modules (cookies, routes, templates, rich text) as jars so its output matches byte for byte;
-   keep them or replace them with your own, as long as the output stays the same.
-4. **Same measurement.** Numbers come from `./bench.sh run`, on the same machine and the same cores
-   as the version you compare against, with the other ports measured in the same run.
+   modules (cookies, routes, templates, rich text) as jars so its output matches byte for byte; keep
+   them, change them in the fork the app builds them from (`upstream/once-campfire-kotlin-pooled`,
+   disclosed in DIFFERENCES.md), or replace them with your own, as long as the output stays the same.
+   The Kotlin app itself is always measured as published.
+4. **Same measurement, both workloads.** Two runs decide, each on the same machine and cores as the
+   version you compare against, with the other ports measured in the same run:
+   - `./bench.sh run`: the article's matrix, one session hammering one cached page, all out (cache
+     hits): requests per second;
+   - `./bench.sh run --matrix realistic`: many sessions loading their rooms while presence and
+     messages are written, at page-load rates you choose for your machine (`--rate`; the defaults,
+     333, 833 and 1,667 pages/s, are 20k, 50k and 100k visible tabs; mostly cache misses): pages
+     served, p99 and CPU per page.
 
-Open a PR with your change and its `results/runs/...` directory.
+   A change should not lose on either against the version it replaces.
+
+Open a PR with your change and both `results/runs/...` directories.
 
 ## Results
 
-On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores, all out (medians of 3 reps):
+On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores:
 
-![Throughput](results/runs/20261013-143448-4c/charts/throughput.svg)
+| | Kotlin | Quarkus | Rust |
+|---|---:|---:|---:|
+| All out, 16 connections: req/s (median of 3 reps) | 47,119 | 107,634 | 44,572 |
+| All out, 1,024 connections: req/s (median of 3 reps) | 98,640 | 133,957 | 48,048 |
+| Realistic, 333 page loads/s offered: CPU per page, p99 (1 rep) | 4.6 ms, 17.2 ms | 4.6 ms, 32.2 ms | 2.9 ms, 4.0 ms |
+| Realistic, 1,667 page loads/s offered: pages/s served (1 rep) | 668 | 1,623 | 1,079 |
 
-Quarkus also uses the least CPU per request, and more memory than Kotlin. The full tables, CPU per
+Quarkus is the current design (below, "After"). Kotlin's and Rust's all-out numbers come from the
+previous run, their code unchanged since. All out, Quarkus serves the most requests with the least CPU
+per request, and uses more memory than Kotlin. On the realistic workload Rust is the leanest at low
+load, and Quarkus serves the most at saturation. The full tables, CPU per
 request, memory and flame graphs: [results/README.md](results/README.md). How the earlier designs compared, run by run:
 [RESULTS.md](RESULTS.md). What was found along the way, including what was not fixed: [NOTES.md](NOTES.md).
 
@@ -56,7 +74,12 @@ Even when the finished page is cached, every request in every app:
    runtime, date and cookies.
 
 So the benchmark is mostly about steps 1–6 around a cache hit: SQLite reads, a little crypto, and
-writing 24 KB well.
+writing 24 KB well. (Quarkus reads `data_version` before and after a batch of requests' reads, not
+around each request: below.)
+
+A real Campfire commits often (every open tab refreshes its presence every 50 s, every message marks
+the room unread for its members), and each commit makes the next page a miss: rendered and gzipped
+from scratch. `--matrix realistic` measures that case (Running, below).
 
 ## How the Quarkus app got fast: two designs
 
@@ -79,15 +102,20 @@ That design was slower than Kotlin at low concurrency. Profiling showed why:
 
 - **The event loops** do everything that is not SQLite: HTTP, the cookie's HMAC, the cache key, the
   cache lookup, the headers, the write.
-- **One SQLite thread** does every SQLite call. Requests queue to it and it serves them in batches:
-  one read transaction per batch, inside it each request's own session, user and room reads, with
-  `data_version` read before and after. A request that needs more (a cache miss, the hourly session
-  write, any other route) runs again on that thread.
+- **One SQLite thread** does every SQLite call, and nothing else. Requests queue to it and it serves
+  them in arrival order: each request's own session, user and room reads in read transactions shared
+  by a batch (at most 256 reads or 2 ms each), with `data_version` read before and after.
+- **A virtual thread per request** runs a request that needs more (a cache miss, the hourly session
+  write, any other route): it renders and gzips there, and each SQL call it needs is forwarded to the
+  SQLite thread, the virtual thread unmounting while it waits. A room page reads all its rows in one
+  forwarded call.
 - **SQLite through FFM** (`Sqlite.java`, a Java port of the Kotlin port's bindings, against the same
   SQLite build): no JDBC, no pool, statements prepared once.
 
 What it solves: only one thread ever takes SQLite's lock, so nobody waits for it; one transaction
-per batch instead of one per statement; and no SQLite call ever blocks an event loop.
+per batch instead of one per statement; no SQLite call ever blocks an event loop; and a slow render
+never holds up the SQLite thread or a cache hit. (Until `ec9ef9c`, misses ran on the SQLite thread
+itself: under frequent commits they queued in front of every hit, NOTES.md "Under writes".)
 
 Before and after, same machine, 2 cores, 16 connections, Kotlin alongside for reference:
 
@@ -121,6 +149,8 @@ Each was measured on its own, before and after, in [NOTES.md](NOTES.md):
   [eclipse-vertx/vert.x#6429](https://github.com/eclipse-vertx/vert.x/issues/6429).
 - The signed cookie is verified by a Java fast path, byte for byte equal to the Kotlin port's.
 - The JVM options of Red Hat's UBI images, so the heap is given back to the OS.
+- The Rust port's two indexes on `messages`, created at boot as Rust creates them: without them every
+  page that isn't a cache hit sorts the room's history (DIFFERENCES.md).
 
 ## Fairness: how we know every app does the same work
 
@@ -134,7 +164,8 @@ Each was measured on its own, before and after, in [NOTES.md](NOTES.md):
   run.
 - All three apps start from the same seed, with the same environment, one at a time, on the same
   CPUs.
-- The Rust and Kotlin ports are built as published, from the commits in `upstream/`. (The Kotlin
+- The Rust and Kotlin ports are built as published, from the commits in `upstream/`; the Quarkus app
+  takes the Kotlin modules from a fork (DIFFERENCES.md). (The Kotlin
   article measured Rust with a patch to its listen backlog; this repository leaves it as shipped:
   [DIFFERENCES.md](DIFFERENCES.md).)
 
@@ -166,7 +197,17 @@ git clone --recurse-submodules <this repo> && cd campfire-quarkus-bench
 ./bench.sh run --matrix quick     # Quarkus vs Kotlin, 4 cores, two connection counts, ~5 minutes
 ./bench.sh run                    # all out, the full matrix (bench/matrix/article.conf), ~30 minutes
 ./bench.sh run --rate 20000,40000   # fixed rates instead: each app at each rate you choose
+./bench.sh run --matrix realistic --rate 333,833,1667   # many users: page loads/s with their writes, ~25 minutes
 ```
+
+`--matrix realistic` (`bench/Workload.java`, `bench/realistic*.hf.yaml`) adds sessions for the seed's
+people and loads their rooms at the page-load rates you give (`--rate`, the open model), with the
+writes the visible tabs behind those page loads make: a tab loads one of its rooms every 60 s,
+refreshes its presence every 50 s (as Campfire's client does) and posts a message every 10 min
+(`--page-every`, `--presence-every`, `--message-every`), so 1.2 presence commits and 0.1 messages per
+page load. A writer outside the apps commits them to each app's database during each step, the same
+rows for every app, on the core left to the OS. Every (person, room) page is compared with the Rust
+port's first. Not modelled: WebSockets (broadcasts, idle connections) and writes inside the apps.
 
 `run` picks the CPUs: the app gets `--cores` physical cores (one SMT thread each) on one NUMA node,
 the load driver twice as many, never on the app's cores. To choose them yourself:
@@ -241,8 +282,9 @@ the app's CPU time over the whole run divided by the responses of both phases.
 
 How this differs from DHH's runs and from the Kotlin article's, and why: [DIFFERENCES.md](DIFFERENCES.md).
 
-`./bench.sh profile --app quarkus --conns 1024` records a CPU flame graph of one app under all-out
-load with async-profiler, into `results/profiles/`: 10 s at one sample per millisecond of CPU (a
+`./bench.sh profile --app quarkus --conns 1024` records a CPU flame graph of one app under the load of
+one run step (all out at `--conns`; or the first `--rate`; or, with `--matrix realistic`, its first
+rate with the writer) with async-profiler, into `results/profiles/`: 10 s at one sample per millisecond of CPU (a
 frame's samples are its CPU time in ms), the JVM started with `-XX:+DebugNonSafepoints` so inlined
 code is attributed to the right frame. `--event alloc`, `wall` or `lock` record other
 events; `--format jfr` writes JFR instead, and allows several events at once
@@ -282,7 +324,8 @@ bench.sh                 the only entry point
 bench/                   Report.java (run by jbang), the Hyperfoil scenarios, the matrices, extra
                          parity requests
 quarkus4-app/            the Quarkus app
-upstream/                the Rust port and the Kotlin port (git submodules, at the commits measured)
+upstream/                the Rust port and the Kotlin port (git submodules, at the commits measured), and the
+                         fork of the Kotlin port whose modules the Quarkus app is built from
 fixtures/                the seed database and the session cookie (fixtures/README.md)
 results/                 this machine's results and the data behind them
 ```

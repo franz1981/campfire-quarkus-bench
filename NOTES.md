@@ -67,26 +67,159 @@ Two of its ideas are not applied yet: one joined statement per request (session,
 membership on unique keys, so no read sharing), and several SQLite threads with one generation whose
 observations are serialized.
 
-## Backlog: an idiomatic reactive variant (separate experiment)
+## Under writes: misses flood the SQLite thread (measured)
 
-Goal: replace as much of the non-idiomatic code as possible with idiomatic Quarkus and Mutiny, and
-match the current app's performance (context propagation off). Parity must stay 0 different. Known
-so far:
-- **Request flow as `Uni`**: the SQLite thread completes each request's emitter on that request's
-  own context (`runOnContext`), so the rest of the request continues on its event loop; misses and
-  session refreshes become `Uni<Response>` jobs on the same thread.
-- **No ThreadLocal**: the kit's `Request` has its own extensions (`getExtensions`/`putExtension`)
-  to carry a request's prefetched reads, and Quarkus runs each request on a duplicated Vert.x
-  context whose locals are request-scoped.
-- **Backpressure without blocking the producer**: a bounded intake split into credits per event
-  loop; a loop without credit keeps the task in its own deque (no lock) and pauses the waiting
-  connections; credits come back with the results. HTTP/1.1 already holds one request per
-  connection in flight (`Http1ServerConnection`).
-- **Batching stays custom**: no Mutiny, Vert.x, Quarkus or jOOQ facility closes a batch on "nothing
-  more queued" (`quarkus4-reactive-app/RESEARCH.md`).
-- **Scaling the same way**: N SQLite threads, each with its own connection and its own event loops
-  (as TechEmpower's Quarkus pgclient keeps one connection per event loop), with the generation's
-  observations serialized.
+A background writer committed to each app's database (an `UPDATE` of `ar_internal_metadata` from a
+`sqlite3` process, which the page doesn't read) during all-out steps. Every commit moves
+`PRAGMA data_version`, which all three apps watch, so every cached page goes stale. 4 cores, 1 rep
+each, 15 s steps, all clean; the writer reached its rates (7,403 commits in 74 s at 100/s).
+
+| commits/s | conns | Rust req/s | Kotlin req/s | Quarkus req/s | p99 ms R / K / Q | Quarkus SQLite thread busy |
+|---:|---:|---:|---:|---:|---|---:|
+| 0 | 64 | 47,252 | 68,466 | 127,601 | 2.6 / 2.0 / 2.4 | 0.35 |
+| 0 | 1024 | 47,981 | 100,619 | 136,048 | 41.4 / 16.2 / 13.4 | 0.30 |
+| 10 | 64 | 43,657 | 64,709 | 118,032 | 6.6 / 4.5 / 3.7 | 0.39 |
+| 10 | 1024 | 28,540 | 94,795 | 120,870 | 103.8 / 18.9 / 22.7 | 0.41 |
+| 100 | 64 | 11,875 | 32,825 | 56,806 | 18.4 / 7.3 / 6.7 | 0.69 |
+| 100 | 1024 | 3,719 | 46,971 | 33,578 | 398.5 / 37.5 / 73.4 | 0.87 |
+
+Why Quarkus drops (temporary counters and async-profiler, 100 commits/s, 1,024 connections,
+30.4k req/s in that run; per second):
+- event loops: 15.3k hits, 6.3k misses on a moved generation, 8.2k misses on a missing entry; the
+  14.5k misses go to the SQLite thread as jobs;
+- there 14.4k of them hit (the entry was put meanwhile), 145 render, 145 puts (57 dropped: the
+  generation moved again);
+- the SQLite thread is 0.87 CPU busy (8,732 CPU samples in 10 s): page renders 4,416 (about 3 ms
+  each, of which gzip about 1.6 ms: 2,303 samples in `Deflater`/zlib), the jobs that turned out to be
+  hits 3,735 (about 26 µs each), batched lookups 436. Across the thread, SQLite itself is 2,237;
+- queue wait on that thread: 30 ms on average for a job (max 105 ms), 13 ms for a lookup.
+
+So after each commit every request misses until the new entry is put, each miss becomes a full
+request on the one thread, and the render that would refill the cache waits behind them: the wait
+(30 ms) is longer than the time between commits (10 ms). At 64 connections the wait is 5 ms and
+throughput halves rather than collapsing; at 0 commits/s: 3 jobs/s, lookups wait 0.36 ms. The
+commits come from outside the app, so a writer thread doesn't change this. Candidates, not tried:
+a request that misses a key whose render is in flight waits for it (or is retried as a batched
+lookup) instead of running in full on the thread; the render first; gzip off the thread (26% of
+it).
+
+Tried (100 commits/s, 1,024 connections, one 30 s diagnostic run each, with the counters on;
+`work/coalesce-urgent.diff`):
+
+| Variant | req/s | p99 ms | jobs on the SQLite thread /s | lookups per request |
+|---|---:|---:|---:|---:|
+| as is | 30,390 | 79.2 | 14,496 | 1.0 |
+| misses wait for the render of their key, then run again with their reads | 35,680 | 83.4 | 12,277 | 1.0 |
+| ... and run again with fresh reads (a new batched lookup) | 31,400 | 82.3 | 7,026 | 2.7 |
+| ... and the render they wait for runs first on the thread | 30,090 | 87.6 | 292 | 3.9 |
+
+The last one removes the flood (292 jobs/s), but not the drop: requests now go round, wait for a
+render, read again, and by then the generation has often moved (a commit every 10 ms), so they miss
+again (32% of the retries hit). The first variant fails the other way: the render reads afresh and
+is kept under the newer generation, a key the waiting requests don't have. In the writer test the
+first variant gave 38,937 req/s at 1,024 connections (33,578 as is) and 60,115 at 64 (56,806),
+one rep each. Not kept. Rust's and Kotlin's drops are not investigated. Scripts:
+`work/writer-test.sh`, `work/writer-diag.sh`, counters `work/probe.diff` (data in
+`/mnt/data/writer-test`, `/mnt/data/writer-diag`; none committed).
+
+## Misses on virtual threads (measured, realistic workload)
+
+The requests the event loops hand on (cache misses, other routes) render and gzip on the request pool,
+their SQL forwarded to the one SQLite thread. With platform threads the pool is the limit: at 50k
+visible tabs (833 pages/s offered, `--matrix realistic`), 4 threads served about 700 pages/s with 2.7
+of 4 app cores busy: each spent 29.5% of its time parked waiting for the SQLite thread (wall-clock
+profile), while the event loops were 97% idle and the SQLite thread 66% idle. More threads used the
+cores: 8 threads 818 pages/s, 12 threads 905 at 100k tabs, 16 no better. A virtual thread per
+request (now the default, `campfire.request-pool.virtual`) served 1,604 of 1,667 pages/s at 100k tabs
+with 2.42 ms of CPU per page (4.13 ms with 12 platform threads); the Kotlin port served 700-750 at
+4.8-5.2 ms. One rep each, desktop load on the app cores (`--force`). Why the CPU per page drops: not
+measured (candidates: fewer context switches and better cache locality with 4 carriers each running
+a render to its next wait, against 12+ platform threads time-sliced by the OS).
+
+Thread-locals on virtual threads: `-Djdk.traceVirtualThreadLocals=true` showed about 23 set per
+request (the Kotlin modules' `Hmac` `Mac`, `PageParts` SHA-256s, `FragmentKeys` builders, Jackson's
+buffer recycler in `rails-compat`'s `RailsJson`, our `KeyWriter`). Their cost: 77 of 83,276
+allocation samples (0.09%). They are pooled anyway (a thread-local on platform threads, a shared queue
+on virtual threads: `PerThread` in the Kotlin modules' fork, DIFFERENCES.md, which our `KeyWriter`
+uses too); traced again, only our per-request state (`Staged`, `Db`'s room page) is set per virtual
+thread, which creates no object. Another way, not taken: one pooled bundle bound with a `ScopedValue`
+for the request. The room page's gzip (`PageParts.compress`) uses no
+thread-local: it creates and ends a `Deflater` per piece, about 40 per page rendered from scratch.
+
+## Low load: where Quarkus' CPU per page goes (measured, realistic workload at 333 pages/s)
+
+At 333 page loads/s Quarkus spends 4.5 ms of CPU per page, Rust 2.9 (the realistic run in
+`results/`); reproduced twice (4.45 and 4.62 ms, p99 29-30 ms). Not the JIT: sampling each thread's
+CPU every 2 s, the compiler threads used 0.01-0.05 cores during the measured phase (0.48 only in its
+first 2 s), 1.6% of the CPU profile's samples. Where the 1.55 busy cores went (async-profiler `cpu`,
+20 s, 1 sample/ms; reproduce with `./bench.sh profile --app quarkus --matrix realistic --rate 333`):
+
+| Threads | share |
+|---|---:|
+| virtual-thread carriers (`ForkJoinPool` workers: render, gzip) | 79.6% |
+| GC | 9.9% |
+| the SQLite thread | 6.9% |
+| event loops | 1.8% |
+| JIT compilers | 1.6% |
+
+By leaf frame, zlib (the JDK's bundled zlib 1.3.2) is about 45% of all samples: `deflate_slow` 15.5%,
+`deflateSetDictionary` 13.3%, `longest_match` 8.9%, `pqdownheap` 3.3%, the tree builders the rest;
+`PageParts.gzipChunks` is 48.5% inclusive. `RichText.presentMessage` is 13.8% inclusive (much of it
+`java.util.regex`), SHA-256 4.0%. Each piece a page compresses anew (`PageParts.compress`) presets the
+32 KB before it as the dictionary: the scheme needs it to give the same bytes, so its cost is not
+avoidable by reusing the `Deflater`; reuse would save only the allocation of zlib's state, not
+measured. The Rust port compresses with zlib-rs (`flate2` with the `zlib-rs` feature, chosen over
+miniz_oxide for speed according to its Cargo.toml); how it compares with zlib 1.3.2 on these pages is
+not measured. Not measured either: how many pieces each page compresses anew at this rate.
+
+## SQLite cost model (measured, `work/readbench`)
+
+A microbenchmark (`work/readbench/io/quarkus/campfire/ReadBench.java`) on the app's own SQLite build
+(`libcampfire_sqlite3`, the Rust port's flags) and its statements (`Db.Reader`), a copy of the seed on
+the NVMe disk the apps use, pinned to the app CPUs 1-4, 5 s per point after 2 s of warmup, threads
+each with their own connection. Data: `work/readbench/result-nvme.txt`.
+
+| Read (inside a read transaction) | alone | 4 readers at once | x |
+|---|---:|---:|---:|
+| session by token | 0.46 µs | 1.82 µs | 4.0 |
+| user by id | 0.38 | 1.07 | 2.8 |
+| room membership (join) | 0.62 | 1.93 | 3.1 |
+| 4 small layout reads | 3.32 | 13.4 | 4.0 |
+| last page (sorts the room's 131 messages: temp B-tree) | 32.7 | 36.7 | 1.12 |
+| a hit's auth reads, 64 per transaction | 1.6 | +17% / +52% / +98% with 1/2/3 busy page readers | |
+| the same with 3 idle reader connections | 1.63 | | none |
+
+- Transactions: an empty `BEGIN`/`COMMIT` 0.10 µs (deferred: nothing until the first read);
+  autocommit adds 2.6 µs per statement (session 3.07 µs vs 0.46). `PRAGMA data_version` 2.4 µs alone
+  (1.26 µs each with 4 threads: not explained).
+- A miss's reads (auth, last page, layout): 43.6 µs in one transaction, 65.5 µs autocommit; 2, 3, 4
+  readers: 1.9x, 2.5x, 2.8x the throughput of one.
+- Writes (autocommit `UPDATE`, `synchronous=normal`): 4.6 µs alone, max 22 ms (checkpoint fsync).
+  With readers busy all the time, bimodal across runs: some stay at µs, others average 2-6 ms per
+  commit, max about 18 ms. Cause not proven (a guess: SQLite's busy-handler sleeps, 1/2/5/10 ms).
+  On the 4 TB disk (`/mnt/data`, rotational) the same runs stall 20-36 ms: measure on the apps' disk.
+- Why short reads contend: one page-cache mutex shared by every connection (`pcache1Fetch`/
+  `pcache1Unpin` lock and wake in the CPU profile), because the build defines
+  `SQLITE_ENABLE_MEMORY_MANAGEMENT` (`sqlite3.c`: `pcache1.separateCache = 0`), as Rust's
+  `libsqlite3-sys` bundled build does and the Kotlin port's `native/build.sh` copies. All three apps
+  pay it; not changed.
+
+With the Rust port's index on messages (room_id, created_at), which Quarkus now creates at boot (the
+seed and the Kotlin port don't have it; DIFFERENCES.md "Indexes"), the last page is a covering-index
+range scan and the page reads become short reads (`work/readbench/result-index.txt`):
+
+| | without the index | with it |
+|---|---:|---:|
+| last page, 1 reader | 32.7 µs | 9.0 µs |
+| last page, 4 readers | 36.7 µs each | 41 µs each (less in total than 1 reader) |
+| a miss's reads, 1 reader | 43.6 µs | 18.6 µs (54k/s) |
+| a miss's reads, 4 readers | 62 µs each (65k/s) | 68.5 µs each (58k/s) |
+| a hit's lookup with 2 busy page readers | +52% | +150% (4.0 µs) |
+
+So with the index, reading on more threads than one buys nothing: all SQL stays on one thread.
+
+In the app (cache off, 64 connections, before the index), the SQLite thread spends 78 µs per page against 43.6 µs here:
+2.6 read transactions per request, each with two `data_version` observations.
 
 ## Memory: why Quarkus' RSS was high, what fixed it, what is left
 
