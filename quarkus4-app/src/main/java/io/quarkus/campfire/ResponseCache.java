@@ -177,6 +177,12 @@ public final class ResponseCache {
         }
     }
 
+    /**
+     * The references the request being handled borrows ({@link HttpRoutes}): every fragment its
+     * view hands out is held until its response is written.
+     */
+    static final ScopedValue<campfire.kit.Borrows> BORROWS = ScopedValue.newInstance();
+
     /** What a request captured before authentication: the generation, and its fragment store's view. */
     record Snapshot(Long generation, FragmentCache fragments) {
         static Snapshot capture(Ctx c) {
@@ -184,6 +190,7 @@ public final class ResponseCache {
             SqliteStage.Prefetched p = Staged.current();
             Long generation = p != null ? p.generationBefore : app.responseCache.version();
             FragmentCache fragments = generation != null ? app.fragments.namespace(generation).scoped(origin(c.urlFor(""))) : new FragmentCache(0);
+            if (BORROWS.isBound()) fragments = fragments.borrowing(BORROWS.get());
             return new Snapshot(generation, fragments);
         }
     }

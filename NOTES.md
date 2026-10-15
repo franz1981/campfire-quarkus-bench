@@ -146,7 +146,10 @@ thread, which creates no object. Another way, not taken: one pooled bundle bound
 for the request. The room page's gzip (`PageParts.compress`) uses no
 thread-local: it creates and ends a `Deflater` per piece, about 40 per page rendered from scratch.
 
-## Low load: where Quarkus' CPU per page goes (measured, realistic workload at 333 pages/s)
+## Low load: where Quarkus' CPU per page went (measured, realistic workload at 333 pages/s)
+
+This is the profile before the deflate moved to zlib-ng through FFM (next section); the page costs
+3.6 ms now, the difference being zlib's share below.
 
 At 333 page loads/s Quarkus spends 4.5 ms of CPU per page, Rust 2.9 (the realistic run in
 `results/`); reproduced twice (4.45 and 4.62 ms, p99 29-30 ms). Not the JIT: sampling each thread's
@@ -171,6 +174,106 @@ avoidable by reusing the `Deflater`; reuse would save only the allocation of zli
 measured. The Rust port compresses with zlib-rs (`flate2` with the `zlib-rs` feature, chosen over
 miniz_oxide for speed according to its Cargo.toml); how it compares with zlib 1.3.2 on these pages is
 not measured. Not measured either: how many pieces each page compresses anew at this rate.
+
+## The fragment cache, the deflate and the fragments' memory (measured, realistic workload)
+
+The changes of 2026-10-15, in the order they were found, each measured on its own (one run each
+unless stated; the committed medians are the runs under `results/runs` of that date). The current
+state: the fragment store is a Caffeine cache, the pieces are deflated by the system's zlib through
+FFM, cached fragments live on the heap by default or in native memory by switch. The Quarkus app's
+modules come from the fork at `63faf05` (DIFFERENCES.md).
+
+- **The 29-32 ms p99 at 333 pages/s was old-generation collection of the fragment cache.** GC log: a
+  full GC every ~1.7 s of 29-43 ms, 9.3 MB promoted per young GC (young GCs ≤ 6.5 ms; the SQLite
+  thread's longest wait 6.2 ms); the dead objects were `byte[]` of ~910 B. With the fragment cache off
+  promotion fell to 0.3 MB per young GC, no full GC, p99 5.5 ms; the response cache off changed
+  nothing. The cache is keyed by database generation (the Rust design), so at ~600 commits/s observed
+  its entries live just long enough to be promoted and then die.
+- **Fragments and their compressed pieces can live outside the heap.** The fork's `Bytes` keeps a
+  fragment's HTML and pieces in a store the application installs (`CAMPFIRE_FRAGMENT_MEMORY=native`,
+  the default is `heap` since the Caffeine store, below: Netty's unpooled direct buffers, `malloc`/`free`, no `Cleaner`, the no-cleaner path checked
+  with Netty 4.2.18: `useDirectBufferNoCleaner=true`); a fragment is reference counted, each request
+  borrows what its view hands out and releases it when its response is written. At 333: p99 26.3 →
+  6.1 ms, full GCs 12 → 1, promotion 9.4 → 1.1 MB per young GC, RSS 572 → 588 MB (702 with Netty's
+  pooled allocator, rejected). Live native memory is ~26 MB at 333 and 65-75 MB at 1,667, back to
+  ~25 MB when the load stops; the excess under load is what in-flight requests hold (about 1,200
+  pages × 40 fragments × ~1 KB, arithmetic, not measured). All-out cache hits unchanged (106.8k /
+  134.4k req/s at 16 / 1,024 connections); parity 43/43.
+- **The same change lost 10-25% of throughput at 1,667 pages/s** (native 1,225-1,506 served in
+  seven runs, heap 1,575-1,636 on the same build), found with counters, not a profile: the cost per
+  rendered fragment was equal (41-56 µs), native rendered more fragments per page (23-24 vs 15-20)
+  because fewer pages shared each (generation, room) pair (2.0 vs 2.8). Per-request phase timers then
+  put 1.2 s of the native request's time inside the fragment render loop, whose CPU is ~1 ms; a timed
+  no-op `synchronized` on the fragment store before each fetch cost 736 ms per page in native against
+  22 in heap (about 20 ms per acquisition against 0.6), and JFR (`jdk.JavaMonitorEnter`, 1 ms
+  threshold) showed the SQLite thread blocked on that monitor 3.1 s of a 40 s run (JFR records no park
+  or monitor events for virtual threads here; the probe does). Native did more under the monitor:
+  the retain, the borrow queue's add, and the releases and frees of replaced and pruned entries.
+  **Fix (fork `f995fc5`):** the monitor covers only the lookup and the retain; borrows are recorded and
+  everything released after it. Probe 736 → 43 ms per page, the loop 806 → 47 ms, native 1,639 served
+  at 2.38 ms/page against heap 1,664 at 2.29 on the same build (both with zlib-ng). Why each contended
+  acquisition cost ~20 ms is not measured; a guess: a virtual thread that loses a contended monitor
+  unmounts and re-queues behind the ~1,300 runnable ones.
+- **The store itself: Caffeine instead of one map under one lock (fork `63faf05`).** A request
+  locks only the entry it reads or writes: a borrowing view (every request in this app) retains
+  inside `asMap().computeIfPresent` on its key, which an eviction of that key cannot interleave, a
+  plain view reads with `getIfPresent`; the removal listener releases whatever leaves; Caffeine's
+  maintenance (eviction, the listener) runs on the calling thread, reads included
+  (`executor(Runnable::run)`, as the response cache's), so it can run on the SQLite thread or an
+  event loop; its cost there is not measured. Eviction is Caffeine's window TinyLFU, not the Rails store's LRU; with keys
+  that change every generation the hit rate was the worry, and it is unchanged at 1,667 (rendered
+  21.3, cached 15.7, prefetched 3.7 per page against 22.6 / 15.9 / 2.3; the cache at its 32 MB).
+  One run each: 1,667: 1,661 served at 2.35 ms/page (1,625 at 2.43 in the official 3 reps); 333:
+  p99 4.2 ms and p99.9 4.8 ms (4.9 and 38.0). JFR: the SQLite thread no longer parks on the store
+  (3.1 s per 40 s with the monitor). With the store on Caffeine, heap fragments are as fast as native
+  ones (three interleaved reps at 1,667, heap / native: served 1,654-1,659 / 1,637-1,649, CPU per page
+  2,325-2,380 / 2,353-2,395 µs, p50 164-218 / 482-919 ms, p99 315-1,099 / 1,258-1,594 ms) and use
+  50-80 MB less RSS at low load, so `heap` is the default; native keeps the 333 tail (p99.9 4.8 vs 30
+  ms, the heap cache's old-generation collections). Why native's latency at saturation is higher is not
+  measured. **Capacity** (heap, one run each, 2,048 connections): 2,000 offered → 1,988 served at
+  1.92 ms per page; 2,500 → 2,479 at 1.55; 3,333 → 3,327 at 1.17, p99 1.19 s, 3.51 of 4 CPUs busy.
+  The cost per page falls because more pages share each generation (rendered fragments per page:
+  36.9 at 333, 21 at 1,667, 13 at 2,500, 8 at 3,333); Rust observes the generation per request, never
+  shares, and stays at 3.3 ms per page. At 5,000 offered over 4,096 connections (`--rate-conns`) the
+  app died in the step's warmup with `OutOfMemoryError: Java heap space` (512 MB): every connection's
+  request in flight at once is more than the heap holds; the footprint per in-flight request is not
+  measured (a class histogram at 3,333: `byte[]` 130 MB live, `StackChunk` 3,780 objects / 4.5 MB, the
+  parked virtual threads' stacks). Over 2,048 connections, 5,000 offered → 4,843 served at 0.86 ms per
+  page with 3.48 of 4 CPUs busy and the client waiting 30% of its response time for a connection:
+  the bound reached first is memory (requests in flight × their footprint against the heap), not CPU.
+- **Where the CPU goes now** (async-profiler `cpu`, 20 s at 333 pages/s, this build, 3.41 ms per
+  page): carriers 83%, the SQLite thread 9.5%, GC 3.5% (was 9.9%), event loops 2.3%. Per page:
+  gzip 1.38 ms (`FfmZlib.deflate` 1.33, of which `deflateSetDictionary` 0.28; zlib-ng's `insert_string`
+  is 16% of all samples, `longest_match_avx512` 8%, `build_tree` 6.5%), the render 1.39 ms
+  (`RichText.presentMessage` 0.65, of which the autolink regex 0.42; `renderMessage` 0.19; SHA-256
+  0.17; `String.encodeUTF8_UTF16` 6.5% of samples), SQLite 0.33 ms. Against Rust's 2.93 ms the gap is
+  spread over all three; nothing dominates it.
+- **Stop-the-world at 1,667 pages/s, this build** (GC logs, the last 40 s of a step): heap fragments:
+  1,376 young pauses (median 2.9 ms) and 73 full ones of 31-57 ms, 6.9 s stopped of 40, 17%; native
+  fragments: 1,275 young and 26 full of 38-58 ms, 4.7 s, 12%. What survives young collections at 833
+  (async-profiler `alloc --live`, heap fragments, by allocation site): the fragments themselves
+  (`Presenter.fragment`, `Bytes.HEAP`: 44%), and the response cache's bodies (`ResponseCache.collect`
+  and `PageParts.Builder.build`: 49%), a heap `byte[]` per cached page beside its direct copy (NOTES
+  "Netty's LOW_MEM mode"), 64 MB with a 15 s TTL. That copy is the promotion source left in native
+  mode; removing it (a direct-only body) is the next step.
+  A `ReentrantLock` in place of the monitor was the other option
+  (a virtual thread that blocks on a contended monitor is frozen, its stack copied to the heap, and
+  the monitor inflated), not measured: Caffeine removes the wait rather than cheapening it.
+- **zlib-ng through FFM.** The fork compresses pieces through a `PageParts.Deflate` the application
+  may install (`7598a6a`); `FfmZlib` calls the system's `libz.so.1` (Fedora 43's zlib-ng-compat,
+  `1.3.1.zlib-ng`) with the FFM API: raw deflate at level 6, the same 32 KB preset dictionary,
+  sync-flushed, a direct-buffer fragment read in place, one native copy into the kept piece, no
+  `byte[]`; `z_stream`'s layout checked with a C program (112 bytes). The JDK's own zlib 1.3.2 is
+  statically linked into `libzip.so` and not reachable. The downcalls are critical (no thread-state
+  transition), and `deflateSetDictionary`'s takes a heap-backed dictionary pinned for the call
+  (`Linker.Option.critical(true)`), so heap fragments copy only the ~1 KB input: `deflate` reads it
+  through `z_stream.next_in`, a pointer in the struct, which a heap array can't supply. Heap mode,
+  one run each: 3.64 → 3.54 ms/page at 333, 2.42 → 2.37 at 1,667. Same inflated bytes (`FfmZlibTest`, and
+  parity 43/43 with it active); the gzip bytes differ, which the parity already masks (`<gzip
+  length>`). Default `CAMPFIRE_DEFLATE=ffm`, `jdk` for the JDK's. CPU per page, the same build with
+  `jdk` against `ffm`, native fragments, one run each: 333: 4.33 → 3.50 ms (p99 5.8 → 4.8); with the
+  earlier builds, 833: 4.2 → 3.5 ms (p99 34 → 16), 1,667 heap 2.37 → 2.29 ms. How zlib-ng compares
+  with Rust's zlib-rs is still not measured.
 
 ## SQLite cost model (measured, `work/readbench`)
 

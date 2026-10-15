@@ -5,6 +5,7 @@ import java.util.Map;
 import jakarta.annotation.PostConstruct;
 import jakarta.inject.Singleton;
 import jakarta.inject.Inject;
+import org.jboss.logging.Logger;
 
 import campfire.app.PublicFilesKt;
 import campfire.kit.Action;
@@ -34,6 +35,8 @@ import campfire.views.FragmentCache;
  */
 @Singleton
 public class CampfireApp {
+    private static final Logger LOG = Logger.getLogger(CampfireApp.class);
+
     final CampfireConfig config = new CampfireConfig();
     final Secrets secrets = new Secrets(config.secretKeyBase);
     final SignedCookies signedCookies = new SignedCookies(secrets);
@@ -49,6 +52,11 @@ public class CampfireApp {
     @PostConstruct
     void init() {
         responseCache = new ResponseCache.Store(db.dataVersion(), config.responseCacheBytes);
+        if (config.nativeFragments) campfire.kit.Bytes.Companion.setStore(NativeBytes.STORE);
+        if (config.ffmDeflate) {
+            campfire.kit.PageParts.setDeflate(FfmZlib.INSTANCE);
+            LOG.infof("pieces deflated by the system zlib %s through FFM", FfmZlib.version());
+        }
         front = FrontConfig.Companion.fromEnv();
         KitConfig production = KitConfig.Companion.production(config.disableSsl);
         KitConfig kitConfig = new KitConfig(production.getProxy(), production.getForceSsl(), production.getHsts(), production.getSession(),

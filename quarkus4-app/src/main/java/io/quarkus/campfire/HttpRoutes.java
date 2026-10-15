@@ -15,6 +15,9 @@ import jakarta.inject.Singleton;
 
 import org.jboss.logging.Logger;
 
+import campfire.kit.Body;
+import campfire.kit.Borrows;
+import campfire.kit.Bytes;
 import campfire.kit.ChunkedBody;
 import campfire.kit.CookieJar;
 import campfire.kit.Headers;
@@ -91,14 +94,19 @@ public class HttpRoutes {
                 return;
             }
             Staged.set(prefetched);
+            Borrows borrows = new Borrows();
             Response response;
             try {
-                response = handle(request);
+                response = handle(request, borrows);
             } finally {
                 Staged.clear();
             }
-            if (prefetched.needsStage) onPool(loop, http, toRequest(http, body));
-            else respond(http, response);
+            if (prefetched.needsStage) {
+                borrows.releaseAll();
+                onPool(loop, http, toRequest(http, body));
+            } else {
+                respond(http, response, borrows);
+            }
         });
     }
 
@@ -110,8 +118,9 @@ public class HttpRoutes {
     private void onPool(Context loop, HttpServerRequest http, Request request) {
         try {
             pool.execute(() -> {
-                Response response = handle(request);
-                loop.runOnContext(ignored -> respond(http, response));
+                Borrows borrows = new Borrows();
+                Response response = handle(request, borrows);
+                loop.runOnContext(ignored -> respond(http, response, borrows));
             });
         } catch (RejectedExecutionException e) {
             overloaded(http);
@@ -133,11 +142,15 @@ public class HttpRoutes {
         http.response().setStatusCode(503).putHeader("retry-after", "1").putHeader("content-length", "0").end();
     }
 
-    /** Writes {@code response}; if that fails, the connection still gets an answer (or is closed). */
-    private static void respond(HttpServerRequest http, Response response) {
+    /**
+     * Writes {@code response} and then releases what its request borrowed; if that fails, the
+     * connection still gets an answer (or is closed).
+     */
+    private static void respond(HttpServerRequest http, Response response, Borrows borrows) {
         try {
-            write(http, response);
+            write(http, response, borrows);
         } catch (Throwable t) {
+            borrows.releaseAll();
             LOG.error("writing the response failed", t);
             if (!http.response().headWritten()) http.response().setStatusCode(500).end();
             else http.connection().close();
@@ -221,9 +234,10 @@ public class HttpRoutes {
         request.resume();
     }
 
-    private Response handle(Request request) {
+    /** {@code request} through the app, the fragments it uses held for it by {@code borrows} ({@link ResponseCache#BORROWS}). */
+    private Response handle(Request request, Borrows borrows) {
         try {
-            return app.handler.handle(request);
+            return ScopedValue.where(ResponseCache.BORROWS, borrows).call(() -> app.handler.handle(request));
         } catch (Throwable e) {
             SqliteStage.Prefetched staged = Staged.current();
             if (staged == null || !staged.needsStage) LOG.error("request failed", e);
@@ -248,7 +262,7 @@ public class HttpRoutes {
      * body unless it has one (none for 1xx, 204, 304, or an empty HEAD response), or chunked when
      * it's marked {@link ChunkedBody}; {@code Date} when it has none.
      */
-    private static void write(HttpServerRequest request, Response response) {
+    private static void write(HttpServerRequest request, Response response, Borrows borrows) {
         HttpServerResponse out = request.response();
         int status = response.getStatus();
         boolean head = request.method() == HttpMethod.HEAD;
@@ -258,7 +272,7 @@ public class HttpRoutes {
         MultiMap headers = out.headers();
         copyHeaders(response, headers);
         ByteBuf page = head ? null : cachedPage(response);
-        Buffer content = page != null ? BufferInternal.buffer(page) : head ? null : content(response.getBody().chunks());
+        Buffer content = page != null ? BufferInternal.buffer(page) : head ? null : content(response.getBody());
         if (!bodiless && response.getExtensions().containsKey(ChunkedBody.class)) {
             headers.remove(HttpHeaders.CONTENT_LENGTH);
             if (!head && !http10) out.setChunked(true);
@@ -268,9 +282,11 @@ public class HttpRoutes {
                 headers.set(HttpHeaders.CONTENT_LENGTH, Long.toString(length));
             }
         }
-        if (content == null) out.end();
-        else if (page == null) out.end(content);
-        else out.end(content).onComplete(written -> page.release());
+        var written = content == null ? out.end() : out.end(content);
+        written.onComplete(done -> {
+            if (page != null) page.release();
+            borrows.releaseAll();
+        });
     }
 
     /**
@@ -281,12 +297,29 @@ public class HttpRoutes {
      * Netty's release after the write doesn't reach it.
      */
     private static ByteBuf cachedPage(Response response) {
-        List<byte[]> chunks = response.getBody().chunks();
-        if (response.getExtensions().get(ResponseCache.Hit.class) instanceof ResponseCache.Hit hit
-                && chunks.size() == 1 && chunks.getFirst() == hit.source()) {
+        if (response.getBody() instanceof Body.Bytes body
+                && response.getExtensions().get(ResponseCache.Hit.class) instanceof ResponseCache.Hit hit
+                && body.getBytes() == hit.source()) {
             return hit.retainedPage();
         }
         return null;
+    }
+
+    /**
+     * The body as one Vert.x buffer, without copying: kept native bytes ({@link Body.Buffers}) as
+     * views their request holds until the write completes, made unreleasable so that nothing on the
+     * way releases a reference that isn't its own; heap arrays wrapped.
+     */
+    private static Buffer content(Body body) {
+        if (!(body instanceof Body.Buffers buffers)) return content(body.chunks());
+        List<Bytes> list = buffers.getList();
+        if (list.isEmpty()) return null;
+        ByteBuf[] parts = new ByteBuf[list.size()];
+        for (int i = 0; i < parts.length; i++) {
+            Bytes bytes = list.get(i);
+            parts[i] = bytes instanceof NativeBytes kept ? Unpooled.unreleasableBuffer(kept.view()) : Unpooled.wrappedBuffer(bytes.array());
+        }
+        return BufferInternal.buffer(Unpooled.wrappedBuffer(parts));
     }
 
     /** The body's buffers as one Vert.x buffer, without copying (the epoll transport copies heap buffers into a direct one to write). */

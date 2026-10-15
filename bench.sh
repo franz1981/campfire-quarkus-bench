@@ -19,6 +19,7 @@
 #   --reps N  --secs N     repetitions and seconds per step (default: the matrix's)
 #   --rate R,R...          fixed rates instead of all out: each app at each of these req/s, in turn
 #                          (matrix realistic: page loads/s, with the writes that go with them; see below)
+#   --rate-conns N         connections the fixed rates are driven through (default: the matrix's, 2048)
 #   --page-every S --presence-every S --message-every S --sessions N --message-room ID|all
 #                          (matrix realistic) a visible tab loads a room page every PAGE_EVERY s, refreshes its
 #                          presence every PRESENCE_EVERY s and posts a message every MESSAGE_EVERY s: per page
@@ -28,7 +29,8 @@
 #   --event E[,E...]       (profile) async-profiler events: cpu (default), alloc, wall, lock; several need --format jfr
 #   --format F             (profile) html (flame graph, default), jfr (for JFR tools and the Jafar MCP server), collapsed
 # Environment: JDK_KOTLIN, JDK_QUARKUS (SDKMAN identifiers), BENCH_LOCK (the lock file runs share),
-#   AP_OPTS (more async-profiler options for profile, e.g. "-i 100us").
+#   AP_OPTS (more async-profiler options for profile, e.g. "-i 100us"), APP_JVM_OPTS (more options for both JVM apps),
+#   CAMPFIRE_FRAGMENT_MEMORY=heap|native and CAMPFIRE_DEFLATE=ffm|jdk (the Quarkus app's switches, README "After").
 set -euo pipefail
 export LC_ALL=C
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -46,6 +48,8 @@ COOKIE=$(cat "$ROOT/fixtures/cookie.txt")
 
 # Both JVMs: ParallelGC (the Kotlin port's published JAVA_OPTS), compact headers, a 512 MB heap ceiling.
 JVM_COMMON=(-XX:+UseParallelGC -XX:+UseCompactObjectHeaders -Xmx512m --enable-native-access=ALL-UNNAMED)
+# shellcheck disable=SC2206  # APP_JVM_OPTS: words on purpose (diagnostics, e.g. a GC log; config.txt records them)
+JVM_COMMON+=(${APP_JVM_OPTS:-})
 # Quarkus: the options of Red Hat's UBI OpenJDK images (memory given back to the OS sooner), glibc's
 # heap trimmed every 5 s, Netty's and Vert.x' checks off. Event loops: Quarkus' default.
 JVM_QUARKUS=(-XX:MinHeapFreeRatio=10 -XX:MaxHeapFreeRatio=20 -XX:GCTimeRatio=4 -XX:AdaptiveSizePolicyWeight=90 -XX:+ExitOnOutOfMemoryError
@@ -439,6 +443,8 @@ describe() {
   [ "$WORKLOAD" = realistic ] && echo "workload=realistic rates=$RATES page_every=${PAGE_EVERY}s presence_every=${PRESENCE_EVERY}s message_every=${MESSAGE_EVERY}s sessions=$SESSIONS message_room=$MESSAGE_ROOM pages=$(wc -l < "$OUT/workload/pages.csv")"
   echo "cpu=$(lscpu | sed -n 's/^Model name: *//p') kernel=$(uname -r) governor=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_governor" 2> /dev/null) boost=$(cat /sys/devices/system/cpu/cpufreq/boost 2> /dev/null) max_khz=$(cat "/sys/devices/system/cpu/cpu$cpu0/cpufreq/scaling_max_freq" 2> /dev/null)"
   echo "jdk_kotlin=$JDK_KOTLIN jdk_quarkus=$JDK_QUARKUS jvm_common=${JVM_COMMON[*]} jvm_quarkus=${JVM_QUARKUS[*]}"
+  local libz; libz=$(ldconfig -p 2> /dev/null | awk '!found && /libz\.so\.1 \(libc6,x86-64\)/ { print $NF; found = 1 }')
+  echo "quarkus_fragment_memory=${CAMPFIRE_FRAGMENT_MEMORY:-heap} quarkus_deflate=${CAMPFIRE_DEFLATE:-ffm} libz=$libz -> $(readlink -f "$libz" 2> /dev/null)"
   local d; for d in "$ROOT" "$RUST" "$KOTLIN" "$KOTLIN_POOLED"; do echo "$(basename "$d") $(git -C "$d" rev-parse --short HEAD) $(git -C "$d" status --short -- . ':!results/runs' | wc -l) changed"; done
 }
 
@@ -569,6 +575,7 @@ while [ $# -gt 0 ]; do
     --driver-cpus) DRIVER_CPUS=$2; shift ;;
     --apps) override[APPS]=${2//,/ }; shift ;;
     --conns) override[CONNS]=${2//,/ }; shift ;;
+    --rate-conns) [[ ${2:-} =~ ^[1-9][0-9]*$ ]] || die "--rate-conns needs a connection count"; override[RATE_CONNS]=$2; shift ;;
     --reps) override[REPS]=$2; shift ;;
     --secs) override[SECS]=$2; shift ;;
     --rate) [[ ${2:-} =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || die "--rate needs the rates, e.g. --rate 20000,40000"

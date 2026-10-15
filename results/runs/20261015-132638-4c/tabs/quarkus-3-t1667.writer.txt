@@ -1,0 +1,1 @@
+writer: 56005 presence commits, 4668 message commits, 0 failed, commit avg 145.6 us, max 36.6 ms

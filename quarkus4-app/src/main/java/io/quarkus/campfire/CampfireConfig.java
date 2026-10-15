@@ -21,6 +21,13 @@ public final class CampfireConfig {
     public final int fragmentCacheBytes;
     /** {@code CAMPFIRE_RESPONSE_CACHE_MB}: the response cache's limit, 64 MB by default; zero disables it. */
     public final long responseCacheBytes;
+    /**
+     * {@code CAMPFIRE_FRAGMENT_MEMORY}: where cached fragments and their compressed pieces are kept,
+     * {@code heap} (default, as the Kotlin port keeps them) or {@code native} ({@link NativeBytes}).
+     */
+    public final boolean nativeFragments;
+    /** {@code CAMPFIRE_DEFLATE}: {@code ffm} (default), the system's zlib through FFM ({@link FfmZlib}), or {@code jdk}, the JDK's own zlib. */
+    public final boolean ffmDeflate;
 
     public CampfireConfig() {
         this(ConfigProvider.getConfig());
@@ -36,6 +43,16 @@ public final class CampfireConfig {
                 .filter(v -> value(config, "VAPID_PRIVATE_KEY").filter(p -> !p.isBlank()).isPresent()).orElse(null);
         fragmentCacheBytes = value(config, "CAMPFIRE_FRAGMENT_CACHE_MB").map(CampfireConfig::intOrNull).orElse(32) * 1024 * 1024;
         responseCacheBytes = megabytes(config, "CAMPFIRE_RESPONSE_CACHE_MB", 64);
+        String fragmentMemory = value(config, "CAMPFIRE_FRAGMENT_MEMORY").orElse("heap");
+        if (!fragmentMemory.equals("native") && !fragmentMemory.equals("heap")) {
+            throw new IllegalArgumentException("CAMPFIRE_FRAGMENT_MEMORY=\"" + fragmentMemory + "\" is not native or heap");
+        }
+        nativeFragments = fragmentMemory.equals("native");
+        String deflate = value(config, "CAMPFIRE_DEFLATE").orElse("ffm");
+        if (!deflate.equals("jdk") && !deflate.equals("ffm")) {
+            throw new IllegalArgumentException("CAMPFIRE_DEFLATE=\"" + deflate + "\" is not jdk or ffm");
+        }
+        ffmDeflate = deflate.equals("ffm");
     }
 
     private static Optional<String> value(Config config, String name) {

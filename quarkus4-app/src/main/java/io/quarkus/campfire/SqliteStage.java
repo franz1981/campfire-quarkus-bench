@@ -241,7 +241,7 @@ public class SqliteStage {
             while (running) {
                 if (System.nanoTime() - nextStats >= 0) {
                     nextStats = System.nanoTime() + TimeUnit.SECONDS.toNanos(statsSeconds);
-                    LOG.info(stats.drain(app.responseCache.observedGeneration()));
+                    LOG.info(stats.drain(app.responseCache.observedGeneration()) + String.format("; fragment cache %d entries %d KB", app.fragments.getSize(), app.fragments.bytes() / 1024));
                 }
                 if (queue.drain(take, MAX_BATCH) > 0) {
                     try {
@@ -413,7 +413,6 @@ public class SqliteStage {
         long lookups, readOps, versionOps, writeOps, transactions, tasks, waitedNanos, maxWaitNanos;
         long since = System.nanoTime();
         long generation;
-
         void waited(long nanos) {
             tasks++;
             waitedNanos += nanos;
@@ -423,9 +422,11 @@ public class SqliteStage {
         String drain(long observedGeneration) {
             long now = System.nanoTime();
             double seconds = (now - since) / 1e9;
-            String line = String.format("SQLite stage: %.0f generations/s, %.0f lookups/s, %.0f reads/s, %.0f versions/s, %.0f writes/s, %.0f transactions/s, wait avg %.0f us max %.0f us",
+            String line = String.format("SQLite stage: %.0f generations/s, %.0f lookups/s, %.0f reads/s, %.0f versions/s, %.0f writes/s, %.0f transactions/s, wait avg %.0f us max %.0f us; native %d KB in %d buffers; %d pages, fragments %d prefetched %d cached %d rendered %d raced, render %d us",
                     (observedGeneration - generation) / seconds, lookups / seconds, readOps / seconds, versionOps / seconds, writeOps / seconds, transactions / seconds,
-                    tasks == 0 ? 0.0 : waitedNanos / 1e3 / tasks, maxWaitNanos / 1e3);
+                    tasks == 0 ? 0.0 : waitedNanos / 1e3 / tasks, maxWaitNanos / 1e3, NativeBytes.liveBytes() / 1024, NativeBytes.liveBuffers(),
+                    RoomsController.PAGES.sumThenReset(), RoomsController.FRAGMENTS_PREFETCHED.sumThenReset(), RoomsController.FRAGMENTS_CACHED.sumThenReset(), RoomsController.FRAGMENTS_RENDERED.sumThenReset(),
+                    RoomsController.FRAGMENTS_RACED.sumThenReset(), RoomsController.RENDER_NANOS.sumThenReset() / 1000);
             lookups = readOps = versionOps = writeOps = transactions = tasks = waitedNanos = maxWaitNanos = 0;
             generation = observedGeneration;
             since = now;

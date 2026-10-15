@@ -97,6 +97,7 @@ final class RoomsController {
     }
 
     private static Response renderShow(Ctx c, CampfireApp app, Room room, FragmentCache fragments, User user, Instant now, String host) {
+        PAGES.increment();
         ShowView show = app.db.read(r -> {
             List<PageMessage<Fragment>> messages = r.lastPage(room.getId(), key -> fragments.get(messageKey(key), Fragment.class));
             Presenter presenter = new Presenter(r, app, fragments, now, host);
@@ -177,6 +178,15 @@ final class RoomsController {
         return value != null ? value : "";
     }
 
+    /** Room pages rendered, and their message fragments: found by the page's reads, found in the cache, rendered (the stage's statistics). */
+    static final java.util.concurrent.atomic.LongAdder PAGES = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder FRAGMENTS_PREFETCHED = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder FRAGMENTS_CACHED = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder FRAGMENTS_RENDERED = new java.util.concurrent.atomic.LongAdder();
+    /** Rendered fragments another render had stored first, and the time renders took (render, encode, keep). */
+    static final java.util.concurrent.atomic.LongAdder FRAGMENTS_RACED = new java.util.concurrent.atomic.LongAdder();
+    static final java.util.concurrent.atomic.LongAdder RENDER_NANOS = new java.util.concurrent.atomic.LongAdder();
+
     /** Looks rows up for a page of messages, remembering the rooms and users it has seen. */
     private static final class Presenter {
         private final Reads r;
@@ -195,9 +205,20 @@ final class RoomsController {
 
         /** The message's cached fragment, or its render, stored for the next request. */
         Fragment fragment(PageMessage<Fragment> page) {
-            if (page.getFragment() != null) return page.getFragment();
-            return fragments.fetch(messageKey(page.getKey()), Fragment.class, f -> f.getBytes().length,
-                    () -> new Fragment(ViewsKt.renderMessage(view(page.getMessage())).getBytes(StandardCharsets.UTF_8)));
+            if (page.getFragment() != null) {
+                FRAGMENTS_PREFETCHED.increment();
+                return page.getFragment();
+            }
+            Fragment[] rendered = new Fragment[1];
+            Fragment fragment = fragments.fetch(messageKey(page.getKey()), Fragment.class, f -> f.getSize(), () -> {
+                long start = System.nanoTime();
+                rendered[0] = new Fragment(ViewsKt.renderMessage(view(page.getMessage())).getBytes(StandardCharsets.UTF_8));
+                RENDER_NANOS.add(System.nanoTime() - start);
+                return rendered[0];
+            });
+            (rendered[0] != null ? FRAGMENTS_RENDERED : FRAGMENTS_CACHED).increment();
+            if (rendered[0] != null && rendered[0] != fragment) FRAGMENTS_RACED.increment();
+            return fragment;
         }
 
         /** A message as {@code messages/_message} shows it: unrenderable when its creator is gone, or when its plain text raises. */

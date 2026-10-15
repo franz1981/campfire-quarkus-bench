@@ -51,13 +51,13 @@ On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores:
 |---|---:|---:|---:|
 | All out, 16 connections: req/s (median of 3 reps) | 47,119 | 107,634 | 44,572 |
 | All out, 1,024 connections: req/s (median of 3 reps) | 98,640 | 133,957 | 48,048 |
-| Realistic, 333 page loads/s offered: CPU per page, p99 (1 rep) | 4.6 ms, 17.2 ms | 4.6 ms, 32.2 ms | 2.9 ms, 4.0 ms |
-| Realistic, 1,667 page loads/s offered: pages/s served (1 rep) | 668 | 1,623 | 1,079 |
+| Realistic, 333 page loads/s offered: CPU per page, p99 (Kotlin and Rust 1 rep, Quarkus 3) | 4.6 ms, 17.2 ms | 3.6 ms, 5.0 ms | 2.9 ms, 4.0 ms |
+| Realistic, 1,667 page loads/s offered: pages/s served (Kotlin and Rust 1 rep, Quarkus 3) | 668 | 1,654 | 1,079 |
 
-Quarkus is the current design (below, "After"). Kotlin's and Rust's all-out numbers come from the
-previous run, their code unchanged since. All out, Quarkus serves the most requests with the least CPU
-per request, and uses more memory than Kotlin. On the realistic workload Rust is the leanest at low
-load, and Quarkus serves the most at saturation. The full tables, CPU per
+Quarkus is the current design (below, "After"). Kotlin's and Rust's numbers come from the previous
+runs, their code unchanged since. All out, Quarkus serves the most requests with the least CPU per
+request, and uses more memory than Kotlin. On the realistic workload Rust is the leanest at low load,
+and Quarkus serves the most at saturation. The full tables, CPU per
 request, memory and flame graphs: [results/README.md](results/README.md). How the earlier designs compared, run by run:
 [RESULTS.md](RESULTS.md). What was found along the way, including what was not fixed: [NOTES.md](NOTES.md).
 
@@ -111,11 +111,37 @@ That design was slower than Kotlin at low concurrency. Profiling showed why:
   forwarded call.
 - **SQLite through FFM** (`Sqlite.java`, a Java port of the Kotlin port's bindings, against the same
   SQLite build): no JDBC, no pool, statements prepared once.
+- **The fragment cache has no lock around the whole store.** A room page is 40 message fragments
+  (a message's rendered HTML, cached), each cached under the database generation it was rendered in
+  (SQLite's `data_version`: every commit starts a new one, so nothing stale is ever reused; the Rust
+  design). The store is a Caffeine cache: a request locks only the entry it reads or writes. With
+  one lock around the whole store, as the Kotlin port has it, the virtual threads rendering pages and
+  the SQLite thread prefetching all queued on that one lock.
+- **Compression through FFM too.** Each page is gzipped piece by piece (a piece: one fragment's
+  compressed bytes) with the same dictionary scheme as the other ports, so it decompresses to the same
+  page. The pieces are deflated by the system's zlib (zlib-ng on Fedora) called directly, reading the
+  fragment in place, instead of the JDK's bundled zlib behind `java.util.zip`; `CAMPFIRE_DEFLATE=jdk`
+  switches back.
+- **Where cached fragments live is a switch.** On the heap by default (`CAMPFIRE_FRAGMENT_MEMORY=heap`,
+  as the Kotlin port keeps them), or in native memory with reference counting (`native`): the
+  generation-keyed cache's entries live just long enough to be promoted and then die, which the
+  heap pays for in old-generation collections and native memory does not; the native store is
+  leaner in latency tails, the heap in memory. Both are measured in NOTES.md.
 
 What it solves: only one thread ever takes SQLite's lock, so nobody waits for it; one transaction
 per batch instead of one per statement; no SQLite call ever blocks an event loop; and a slow render
 never holds up the SQLite thread or a cache hit. (Until `ec9ef9c`, misses ran on the SQLite thread
 itself: under frequent commits they queued in front of every hit, NOTES.md "Under writes".)
+
+Why it serves more pages the more it is offered: the requests in one SQLite batch read the same
+generation, so their pages share every fragment rendered for it; the busier the server, the bigger
+the batches and the fewer fragments each page renders itself (nearly all 40 at 333 pages/s, about 8
+at 3,333). Rust observes the generation per request, so its pages never share. Offered 5,000 pages/s
+over 2,048 connections, Quarkus served 4,843 with half a CPU to spare; what stops it first is the
+512 MB heap, when more connections put more requests in flight at once (results/README.md). The flip side, under
+saturation only: a page's data is read when it is looked up and sent after the render queue, so at
+send time it is as old as that queue (hundreds of milliseconds at 1,667 pages/s, from the request
+timers; not measured against the database directly), where Rust reads right before it sends.
 
 Before and after, same machine, 2 cores, 16 connections, Kotlin alongside for reference:
 
@@ -178,6 +204,9 @@ Each was measured on its own, before and after, in [NOTES.md](NOTES.md):
 - [jbang](https://www.jbang.dev): it runs the report, Hyperfoil and async-profiler; `jbang-catalog.json`
   pins their versions.
 - A Rust toolchain (`cargo`) and the libvips development files, to build the Rust port.
+- The system zlib (`libz.so.1`): the Quarkus app calls it through FFM to compress pages
+  (`CAMPFIRE_DEFLATE=ffm`, the default). On Fedora it is zlib-ng, on Debian and Ubuntu classic zlib;
+  `config.txt` records which, and `CAMPFIRE_DEFLATE=jdk` uses the JDK's bundled zlib instead.
 - At least 13 physical cores for the default 4-core placement (4 for the app, 8 for the load driver,
   one left to the OS), or fewer with `--cores`, or pass the CPUs yourself.
 - Network access during `setup`: the ports, Maven Central, crates.io, Gradle's distribution, jbang's

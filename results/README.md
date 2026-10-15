@@ -13,13 +13,23 @@ with:
 
 The realistic workload's writer runs on the core left to the OS (CPUs 0 and 16).
 
-Two runs, with the current design (commit `9390b49`; `config.txt` in each has every setting, the JVM
-options and the commits; `report.txt` is the output of `./bench.sh report` on it):
+The runs (`config.txt` in each has every setting, the JVM options and the commits; `report.txt` is
+the output of `./bench.sh report` on it):
 
 - [`runs/20261014-160945-4c/`](runs/20261014-160945-4c/): the article matrix, all out, Quarkus only,
   3 reps (`./bench.sh run --apps quarkus`).
 - [`runs/20261014-161836-4c/`](runs/20261014-161836-4c/): the realistic workload, all three apps,
   1 rep (`./bench.sh run --matrix realistic --rate 333,833,1667 --reps 1`).
+- [`runs/20261015-111312-4c/`](runs/20261015-111312-4c/): the realistic workload, Quarkus only, 3 reps,
+  with the fragments off the heap, the fragment store's monitor change and zlib-ng through FFM
+  (commit `9d59000`, Kotlin modules from the fork at `f995fc5`; `./bench.sh run --matrix realistic
+  --apps quarkus --reps 3`). Kotlin and Rust are unchanged since the run above.
+- [`runs/20261015-121601-4c/`](runs/20261015-121601-4c/): the same, with the fragment store on Caffeine,
+  the deflate's critical downcalls and the fragments back on the heap by default (commit `8b2a551`,
+  fork `63faf05`).
+- [`runs/20261015-132638-4c/`](runs/20261015-132638-4c/): the same build after the review's fixes
+  (commit `f87eec6`, fork `63faf05`; `config.txt` now records the app's switches and the zlib). The
+  current build.
 
 Kotlin and Rust in the all-out table come from the previous run,
 [`runs/20261013-143448-4c/`](runs/20261013-143448-4c/): their code did not change since (the same
@@ -110,6 +120,44 @@ commits and 0.1 messages per page load, the same rows for every app.
   failed connections or error lines in an app's log; the system counted 2 TCP resets during Kotlin's
   833 pages/s step.
 - **One rep**: we have no measure of the spread of these numbers.
+
+### Quarkus, current build (3 reps)
+
+The same workload, Quarkus only, medians of 3 reps (`runs/20261015-132638-4c/`: the fragment store
+on Caffeine, the pieces deflated by the system's zlib through FFM, cached fragments on the heap).
+What changed and how each change was measured: [NOTES.md](../NOTES.md), "The fragment cache, the
+deflate and the fragments' memory". Kotlin and Rust are the rows above, unchanged. The build with
+cached fragments in native memory is `runs/20261015-111312-4c/`, for the tails below.
+
+| pages/s offered | served pages/s | µs CPU/page | p50 ms | p99 ms | p99.9 ms | RSS MB |
+|---:|---:|---:|---:|---:|---:|---:|
+| 333 | 333 | 3,595 | 3.5 | 5.0 | 38.5 | 582 |
+| 833 | 833 | 3,460 | 5.1 | 18.4 | 46.1 | 589 |
+| 1,667 | 1,654 | 2,303 | 187 | 478 | 533 | 599 |
+
+- **At 333 pages/s the p99 is 5.0 ms** (32.2 in the run above): the fragment cache's old-generation
+  collections no longer land in it. CPU per page is 3,595 µs (4,572 above); the profile of this
+  build at 333 (NOTES.md) is two fifths deflate, two fifths render, a tenth SQLite, GC 3.5%. Rust is
+  still leaner there (2,933 µs, p99 4.0 ms).
+- **At 833 pages/s the p99 is 18.4 ms** (58.7 above), and it varies: 14, 18 and 39 ms across the
+  reps, with the p99.9 at 43-49 ms in every rep. Those are the old-generation collections of what
+  is kept on the heap: the fragment cache, and the response cache's bodies (half of what survives a
+  young collection at 833, NOTES.md). With the fragments in native memory (the run `111312`) the p99
+  is 13.6-15.6 ms, the p99.9 still 44-54.
+- **At 1,667 pages/s** Quarkus serves 1,654 (1,623 above) at 2,303 µs per page, with 17% of the
+  step's wall time stopped in garbage collection (73 full collections of 31-57 ms in 40 s, plus the
+  young ones; NOTES.md). The latency there is queueing at saturation and varies widely between reps:
+  p99 478, 2,164 and 331 ms. Rep 2's requests waited 14% of their response time for a free
+  connection of the 2,048.
+- **Beyond the table** (one run each, not official): 2,479 served at 2,500 offered, 3,327 at 3,333,
+  and **4,843 at 5,000** over the same 2,048 connections with 3.5 of the 4 CPUs busy and the client
+  waiting 30% of its response time for a connection. What stops the app first is memory, not CPU: at
+  5,000 offered over 4,096 connections (`--rate-conns 4096`) it ran out of its 512 MB heap during the
+  step's warmup, with every connection's request in flight at once.
+- **RSS** is sampled 20 s into each step, while it is still falling after the all-out warmup (a 40 s
+  step at 333 ends at ~545 MB); not a leak.
+- No errors, invalid responses or missing connections on either side; the writer committed at its
+  rate in every step.
 
 ## Where the time goes
 
