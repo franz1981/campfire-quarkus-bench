@@ -26,7 +26,7 @@ The rules:
 2. **Tests stay green and unmodified.** The tests in `quarkus4-app/src/test` check the cookie
    handling, request keys and routes; add tests, don't weaken them.
 3. **Reuse is fine where it guarantees correctness.** The app uses the Kotlin port's Rails-format
-   modules (cookies, routes, templates, rich text) as jars so its output matches byte for byte; keep
+   modules (cookies, routes, templates, rich text) as jars so its pages match the Rust port's byte for byte once decompressed (the gzip bytes differ between zlib builds in every port, DIFFERENCES.md); keep
    them, change them in the fork the app builds them from (`upstream/once-campfire-kotlin-pooled`,
    disclosed in DIFFERENCES.md), or replace them with your own, as long as the output stays the same.
    The Kotlin app itself is always measured as published.
