@@ -57,7 +57,10 @@ On a Ryzen 9 7950X at a fixed 4.3 GHz, each app on 4 physical cores:
 Quarkus is the current design (below, "After"). Kotlin's and Rust's numbers come from the previous
 runs, their code unchanged since. All out, Quarkus serves the most requests with the least CPU per
 request, and uses more memory than Kotlin. On the realistic workload Rust is the leanest at low load,
-and Quarkus serves the most at saturation. The full tables, CPU per
+and Quarkus serves the most at saturation: offered 1,667 page loads/s, it serves 1,654 where Rust
+serves 1,079 and Kotlin 668, and offered 5,000 over the same 2,048 connections it still serves 4,843
+with CPU to spare (one run, [results/README.md](results/README.md)); the 512 MB heap, not the CPU,
+is what bounds it when more connections put more requests in flight. The full tables, CPU per
 request, memory and flame graphs: [results/README.md](results/README.md). How the earlier designs compared, run by run:
 [RESULTS.md](RESULTS.md). What was found along the way, including what was not fixed: [NOTES.md](NOTES.md).
 
